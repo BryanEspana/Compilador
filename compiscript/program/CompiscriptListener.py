@@ -1,4 +1,4 @@
-# Generated from Compiscript.g4 by ANTLR 4.13.1
+# Generated from program/Compiscript.g4 by ANTLR 4.13.1
 from antlr4 import *
 if "." in __name__:
     from .CompiscriptParser import CompiscriptParser
@@ -251,6 +251,15 @@ class CompiscriptListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by CompiscriptParser#initMethod.
+    def enterInitMethod(self, ctx:CompiscriptParser.InitMethodContext):
+        pass
+
+    # Exit a parse tree produced by CompiscriptParser#initMethod.
+    def exitInitMethod(self, ctx:CompiscriptParser.InitMethodContext):
+        pass
+
+
     # Enter a parse tree produced by CompiscriptParser#expression.
     def enterExpression(self, ctx:CompiscriptParser.ExpressionContext):
         pass
@@ -410,6 +419,15 @@ class CompiscriptListener(ParseTreeListener):
 
     # Exit a parse tree produced by CompiscriptParser#ThisExpr.
     def exitThisExpr(self, ctx:CompiscriptParser.ThisExprContext):
+        pass
+
+
+    # Enter a parse tree produced by CompiscriptParser#SuperExpr.
+    def enterSuperExpr(self, ctx:CompiscriptParser.SuperExprContext):
+        pass
+
+    # Exit a parse tree produced by CompiscriptParser#SuperExpr.
+    def exitSuperExpr(self, ctx:CompiscriptParser.SuperExprContext):
         pass
 
 

@@ -46,7 +46,7 @@ assignment
   ;
 
 expressionStatement: expression ';';
-printStatement: 'print' (expression | StringLiteral) ';'; // Support both print(expr) and print "text"
+printStatement: 'print' '(' expression ')' ';';
 
 ifStatement: 'if' '(' expression ')' block ('else' block)?;
 whileStatement: 'while' '(' expression ')' block;
@@ -67,12 +67,8 @@ functionDeclaration: 'function' Identifier '(' parameters? ')' (':' type)? block
 parameters: parameter (',' parameter)*;
 parameter: Identifier (':' type)?;
 
-// Support for both function and init constructors
-classDeclaration: 'class' Identifier ((':' | 'extends') Identifier)? '{' classMember* '}';
-classMember: functionDeclaration | variableDeclaration | constantDeclaration | initMethod;
-
-// Support for init method (constructor)
-initMethod: 'init' '(' parameters? ')' block;
+classDeclaration: 'class' Identifier (':' Identifier)? '{' classMember* '}';
+classMember: functionDeclaration | variableDeclaration | constantDeclaration;
 
 // ------------------
 // Expression Rules — Operator Precedence
@@ -141,7 +137,6 @@ primaryAtom
   : Identifier                                 # IdentifierExpr
   | 'new' Identifier '(' arguments? ')'        # NewExpr
   | 'this'                                     # ThisExpr
-  | 'super'                                    # SuperExpr
   ;
 
 suffixOp
