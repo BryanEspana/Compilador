@@ -14,6 +14,8 @@ class ExpressionEvaluator:
         self.symbol_table = symbol_table
         self.errors: List[str] = []
         self.suppress_assignment_errors = False  # Flag to suppress assignment error reporting
+        self.last_array_base = None
+        self.last_array_dims = 0
     
     def add_error(self, ctx, message: str):
         """Add a type error with context information"""
@@ -140,49 +142,45 @@ class ExpressionEvaluator:
         
         return result_type
     
+        # == y !=  (solo mismo tipo entre {integer, string, boolean})
     def evaluate_equality_expr(self, ctx) -> SymbolType:
-        """Evaluate equality expressions (==, !=)"""
-        if not ctx:
-            return SymbolType.NULL
-        
+        if not ctx: return SymbolType.NULL
         if ctx.getChildCount() == 1:
             return self.evaluate_relational_expr(ctx.relationalExpr(0))
-        
-        # Multiple operands with == or !=
-        left_type = self.evaluate_relational_expr(ctx.relationalExpr(0))
-        
+
+        left = self.evaluate_relational_expr(ctx.relationalExpr(0))
         for i in range(1, len(ctx.relationalExpr())):
-            right_type = self.evaluate_relational_expr(ctx.relationalExpr(i))
-            operator = ctx.getChild(2 * i - 1).getText()  # Get operator
-            
-            if not self.are_types_compatible(left_type, right_type, operator):
-                self.add_error(ctx, f"Cannot compare {left_type.value} and {right_type.value} with {operator}")
-            
-            left_type = right_type
-        
+            right = self.evaluate_relational_expr(ctx.relationalExpr(i))
+            op = ctx.getChild(2*i - 1).getText()  # '==' o '!='
+
+            ambos_basicos = (left in (SymbolType.INTEGER, SymbolType.STRING, SymbolType.BOOLEAN) and
+                            right in (SymbolType.INTEGER, SymbolType.STRING, SymbolType.BOOLEAN))
+            if not (ambos_basicos and left == right):
+                self.add_error(ctx, f"El operador '{op}' requiere operandos del mismo tipo "
+                                    f"(integer, string o boolean); obtuvo {left.value} y {right.value}")
+                return SymbolType.NULL
+            left = SymbolType.BOOLEAN
         return SymbolType.BOOLEAN
-    
+
+    # <, <=, >, >=  (solo integer vs integer)
     def evaluate_relational_expr(self, ctx) -> SymbolType:
-        """Evaluate relational expressions (<, <=, >, >=)"""
-        if not ctx:
-            return SymbolType.NULL
-        
+        if not ctx: return SymbolType.NULL
         if ctx.getChildCount() == 1:
             return self.evaluate_additive_expr(ctx.additiveExpr(0))
-        
-        # Multiple operands with relational operators
-        left_type = self.evaluate_additive_expr(ctx.additiveExpr(0))
-        
+
+        left = self.evaluate_additive_expr(ctx.additiveExpr(0))
         for i in range(1, len(ctx.additiveExpr())):
-            right_type = self.evaluate_additive_expr(ctx.additiveExpr(i))
-            operator = ctx.getChild(2 * i - 1).getText()  # Get operator
-            
-            if not self.are_types_compatible(left_type, right_type, operator):
-                self.add_error(ctx, f"Cannot compare {left_type.value} and {right_type.value} with {operator}")
-            
-            left_type = right_type
-        
+            right = self.evaluate_additive_expr(ctx.additiveExpr(i))
+            op = ctx.getChild(2*i - 1).getText()
+            if not (left == SymbolType.INTEGER and right == SymbolType.INTEGER):
+                self.add_error(ctx, f"El operador '{op}' requiere integer {op} integer; "
+                                    f"obtuvo {left.value} y {right.value}")
+                return SymbolType.NULL
+            left = SymbolType.BOOLEAN
         return SymbolType.BOOLEAN
+
+
+
     
     def evaluate_additive_expr(self, ctx) -> SymbolType:
         """Evaluate additive expressions (+, -)"""
@@ -305,21 +303,98 @@ class ExpressionEvaluator:
         return SymbolType.NULL
     
     def evaluate_array_literal(self, ctx) -> SymbolType:
-        """Evaluate array literals"""
-        if not ctx or not ctx.expression():
-            return SymbolType.ARRAY  # Empty array
-        
-        # Check all elements have the same type
-        element_type = None
-        for expr_ctx in ctx.expression():
-            expr_type = self.evaluate_expression(expr_ctx)
-            if element_type is None:
-                element_type = expr_type
-            elif element_type != expr_type:
-                self.add_error(ctx, f"Array elements must have the same type, found {element_type.value} and {expr_type.value}")
-                return SymbolType.NULL
-        
-        return SymbolType.ARRAY  # Should store element type info
+        """Evalúa literales de arreglo y setea last_array_base/last_array_dims."""
+        exprs = list(ctx.expression() or [])
+        if not exprs:
+            self.add_error(ctx, "Empty array literal is not allowed")
+            self.last_array_base = None
+            self.last_array_dims = 0
+            return SymbolType.NULL
+
+        # Evalúa cada elemento y recolecta (tipo, base, dims)
+        infos = []
+        for e in exprs:
+            t = self.evaluate_expression(e)
+            if t == SymbolType.ARRAY:
+                base = self.last_array_base
+                dims = self.last_array_dims or 1
+            else:
+                base = t
+                dims = 0
+            infos.append((t, base, dims, e))
+
+        # ¿Algún elemento es un arreglo? -> arreglo anidado
+# después de construir 'infos' = [(t, base, dims, e), ...]
+        # si cualquier hijo fue NULL, ya habrá un mensaje específico: propágalo sin añadir más
+        if any(t == SymbolType.NULL for (t, _, _, _) in infos):
+            self.last_array_base = None
+            self.last_array_dims = 0
+            return SymbolType.NULL
+
+        # a partir de aquí, todos son ARRAY; valida homogeneidad (base, dims)
+        bases = {b for (_, b, _, _) in infos}
+        dims_set = {d for (_, _, d, _) in infos}
+        if len(bases) != 1 or len(dims_set) != 1:
+            self.add_error(ctx, "Array elements must have the same nested array type")
+            self.last_array_base = None
+            self.last_array_dims = 0
+            return SymbolType.NULL
+
+        inner_base = next(iter(bases))
+        inner_dims = next(iter(dims_set))
+        self.last_array_base = inner_base
+        self.last_array_dims = inner_dims + 1
+        return SymbolType.ARRAY
+
+
+        # Caso 1D: todos son primitivos → homogeneidad estricta
+        expected = infos[0][1]  # el tipo base del primer elemento
+        ok = self.validate_array_elements_type(exprs, expected, ctx)
+        self.last_array_base = expected
+        self.last_array_dims = 1
+        return SymbolType.ARRAY if ok else SymbolType.NULL
+
+
+    
+    def validate_array_elements_type(self, elements, expected_type, ctx):
+        """
+        Verifica que todos los elementos de la lista sean del tipo esperado.
+        Si algún elemento no es del tipo esperado, agrega un error.
+        Retorna True si todos son válidos, False si hay error.
+        """
+        all_valid = True
+        for elem in elements:
+            # Si el elemento es un contexto (nodo ANTLR), obtener su tipo y texto
+            if hasattr(elem, 'getText'):
+                elem_type = self.evaluate_expression(elem)
+                elem_value = elem.getText()
+            else:
+                # Elemento no es contexto: intentar inferir tipo (fallback)
+                # Si viene un SymbolType directo, úsalo; en otro caso usar str()
+                if isinstance(elem, SymbolType):
+                    elem_type = elem
+                else:
+                    elem_type = None
+                elem_value = str(elem)
+
+            # Aplicar reglas estrictas: si la lista fue determinada como INTEGER, solo aceptar INTEGER;
+            # si fue STRING, solo aceptar STRING; para otros tipos exigir igualdad.
+            allowed = False
+            if elem_type is None:
+                # No se pudo determinar el tipo del elemento: marcar como inválido
+                allowed = False
+            elif expected_type == SymbolType.INTEGER:
+                allowed = (elem_type == SymbolType.INTEGER)
+            elif expected_type == SymbolType.STRING:
+                allowed = (elem_type == SymbolType.STRING)
+            else:
+                allowed = (elem_type == expected_type)
+
+            if not allowed:
+                self.add_error(ctx, f"error no se puede agregar {elem_value} dado que la lista es tipo {expected_type.value}")
+                all_valid = False
+
+        return all_valid
     
     def evaluate_left_hand_side(self, ctx) -> SymbolType:
         """Evaluate left-hand side expressions (variables, function calls, etc.)"""
@@ -363,6 +438,9 @@ class ExpressionEvaluator:
                 elif isinstance(symbol, ClassSymbol):
                     return SymbolType.CLASS
                 elif symbol.type == SymbolType.ARRAY:
+                    self.last_array_base = symbol.array_type
+                    self.last_array_dims = symbol.array_dimensions
+
                     return SymbolType.ARRAY
                 else:
                     return symbol.type
