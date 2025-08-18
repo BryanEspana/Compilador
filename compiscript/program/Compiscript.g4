@@ -159,21 +159,30 @@ arrayLiteral: '[' (expression (',' expression)*)? ']';
 // ------------------
 
 type: baseType ('[' ']')*;
-baseType: 'boolean' | 'integer' | 'string' | Identifier;
+baseType: 'boolean' | 'integer' | 'string' | 'float' | Identifier;
 
 // ------------------
 // Lexer Rules
 // ------------------
 
 Literal
-  : IntegerLiteral
+  : FloatLiteral
+  | IntegerLiteral
   | StringLiteral
   ;
 
-IntegerLiteral: [0-9]+;
+IntegerLiteral: DIGITS;
+FloatLiteral
+  : DIGITS '.' DIGITS (EXP)?
+  | DIGITS EXP
+  ;
+  
 StringLiteral: '"' (~["\r\n])* '"';
 
 Identifier: [a-zA-Z_][a-zA-Z0-9_]*;
+
+fragment DIGITS : [0-9]+;
+fragment EXP    : [eE] [+\-]? DIGITS;
 
 WS: [ \t\r\n]+ -> skip;
 COMMENT: '//' ~[\r\n]* -> skip;

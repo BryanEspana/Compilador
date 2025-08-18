@@ -47,6 +47,7 @@ class SemanticAnalyzer(CompiscriptListener):
         type_map = {
             'integer': SymbolType.INTEGER,
             'string': SymbolType.STRING,
+            'float': SymbolType.FLOAT,
             'boolean': SymbolType.BOOLEAN,
             'void': SymbolType.VOID
         }
@@ -143,7 +144,15 @@ class SemanticAnalyzer(CompiscriptListener):
         if ctx.initializer():
             symbol.is_initialized = True
             # Type checking will be done in assignment handling
-        
+            init_expr = ctx.initializer().expression()
+            init_type = self.expression_evaluator.evaluate_expression(init_expr)
+
+            if ctx.typeAnnotation():
+                if not self.expression_evaluator.are_types_compatible(var_type, init_type, "assignment"):
+                    self.add_error(ctx, f"Cannot assign {init_type.value} to variable '{var_name}' of type {symbol.type.value}")
+        else:
+            symbol.type = init_type
+
         self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
     
     def enterConstantDeclaration(self, ctx: CompiscriptParser.ConstantDeclarationContext):

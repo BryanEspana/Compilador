@@ -10,6 +10,7 @@ class SymbolType(Enum):
     """Types supported by Compiscript"""
     INTEGER = "integer"
     STRING = "string"
+    FLOAT = "float"
     BOOLEAN = "boolean"
     NULL = "null"
     ARRAY = "array"
