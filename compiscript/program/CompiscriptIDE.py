@@ -8,20 +8,41 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 import os
 import tempfile
 from antlr4 import *
+from antlr4.error.ErrorListener import ErrorListener
 from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
 from SemanticAnalyzer import SemanticAnalyzer
+
+
+class CollectingErrorListener(ErrorListener):
+    """Custom ANTLR error listener that collects syntax errors instead of printing them to consola."""
+    def __init__(self):
+        super().__init__()
+        self.errors = []
+
+    def syntaxError(self, recognizer, offendingSymbol, line, column, msg, e):  # noqa: N802 (ANTLR signature)
+        # Emulate default format: line X:Y msg
+        self.errors.append(f"line {line}:{column} {msg}")
+
+    def has_errors(self):
+        return len(self.errors) > 0
+
+    def get_errors(self):
+        return self.errors
 
 class CompiscriptIDE:
     def __init__(self, root):
         self.root = root
         self.root.title("Compiscript IDE")
         self.root.geometry("1200x800")
-        
-        # Current file
+
+        # Estado de archivo actual
         self.current_file = None
         self.file_modified = False
-        
+        # Último analizador semántico para mostrar tabla símbolos
+        self.last_analyzer = None
+
+        # Construir interfaz
         self.setup_ui()
         self.setup_menu()
         self.load_sample_code()
@@ -30,7 +51,7 @@ class CompiscriptIDE:
         """Setup the menu bar"""
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
-        
+
         # File menu
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
@@ -40,18 +61,20 @@ class CompiscriptIDE:
         file_menu.add_command(label="Save As", command=self.save_as_file)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.root.quit)
-        
+
         # Compile menu
         compile_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Compile", menu=compile_menu)
         compile_menu.add_command(label="Compile", command=self.compile_code, accelerator="F5")
         compile_menu.add_command(label="Clear Output", command=self.clear_output)
-        
+        compile_menu.add_separator()
+        compile_menu.add_command(label="View Symbol Table", command=self.show_symbol_table)
+
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
-        
+
         # Keyboard shortcuts
         self.root.bind('<Control-n>', lambda e: self.new_file())
         self.root.bind('<Control-o>', lambda e: self.open_file())
@@ -63,60 +86,61 @@ class CompiscriptIDE:
         # Main frame
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+
         # Toolbar
         toolbar = ttk.Frame(main_frame)
         toolbar.pack(fill=tk.X, pady=(0, 5))
-        
+
         ttk.Button(toolbar, text="New", command=self.new_file).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Open", command=self.open_file).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Save", command=self.save_file).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
         ttk.Button(toolbar, text="Compile (F5)", command=self.compile_code).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT)
-        
+        ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(5, 0))
+
         # Status label
         self.status_var = tk.StringVar(value="Ready")
         status_label = ttk.Label(toolbar, textvariable=self.status_var)
         status_label.pack(side=tk.RIGHT)
-        
+
         # Paned window for editor and output
         paned_window = ttk.PanedWindow(main_frame, orient=tk.VERTICAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
-        
+
         # Editor frame
         editor_frame = ttk.LabelFrame(paned_window, text="Code Editor", padding=5)
         paned_window.add(editor_frame, weight=3)
-        
+
         # Code editor with line numbers
         editor_container = ttk.Frame(editor_frame)
         editor_container.pack(fill=tk.BOTH, expand=True)
-        
+
         # Line numbers
         self.line_numbers = tk.Text(editor_container, width=4, padx=3, takefocus=0,
-                                   border=0, state='disabled', wrap='none')
+                                    border=0, state='disabled', wrap='none')
         self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
-        
+
         # Code editor
         self.code_editor = scrolledtext.ScrolledText(editor_container, wrap=tk.NONE,
-                                                    font=('Consolas', 11))
+                                                     font=('Consolas', 11))
         self.code_editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         # Bind events for line numbers and modification tracking
         self.code_editor.bind('<KeyRelease>', self.on_text_change)
         self.code_editor.bind('<Button-1>', self.on_text_change)
         self.code_editor.bind('<MouseWheel>', self.on_text_change)
-        
+
         # Output frame
         output_frame = ttk.LabelFrame(paned_window, text="Compilation Output", padding=5)
         paned_window.add(output_frame, weight=1)
-        
+
         # Output text area
-        self.output_text = scrolledtext.ScrolledText(output_frame, height=10, 
-                                                    font=('Consolas', 10),
-                                                    state=tk.DISABLED)
+        self.output_text = scrolledtext.ScrolledText(output_frame, height=10,
+                                                     font=('Consolas', 10),
+                                                     state=tk.DISABLED)
         self.output_text.pack(fill=tk.BOTH, expand=True)
-        
+
         # Configure text tags for colored output
         self.output_text.tag_configure("error", foreground="red")
         self.output_text.tag_configure("success", foreground="green")
@@ -256,7 +280,8 @@ class CompiscriptIDE:
                 temp_file_path = temp_file.name
             
             # Compile the temporary file
-            success, errors = self.run_semantic_analysis(temp_file_path)
+            success, errors, analyzer = self.run_semantic_analysis(temp_file_path)
+            self.last_analyzer = analyzer
             
             # Clean up temporary file
             os.unlink(temp_file_path)
@@ -280,29 +305,90 @@ class CompiscriptIDE:
         try:
             input_stream = FileStream(file_path)
             lexer = CompiscriptLexer(input_stream)
+
+            # Collect lexer errors (e.g., invalid tokens)
+            lexer_error_listener = CollectingErrorListener()
+            lexer.removeErrorListeners()
+            lexer.addErrorListener(lexer_error_listener)
+
             stream = CommonTokenStream(lexer)
             parser = CompiscriptParser(stream)
-            
-            # Parse the program
+
+            # Collect parser (syntax) errors
+            parser_error_listener = CollectingErrorListener()
+            parser.removeErrorListeners()
+            parser.addErrorListener(parser_error_listener)
+
+            # Parse
             tree = parser.program()
-            
-            # Check for syntax errors
-            if parser.getNumberOfSyntaxErrors() > 0:
-                return False, [f"Syntax errors found: {parser.getNumberOfSyntaxErrors()}"]
-            
-            # Semantic Analysis
+
+            # Aggregate syntax errors
+            syntax_errors = lexer_error_listener.get_errors() + parser_error_listener.get_errors()
+            if syntax_errors:
+                return False, syntax_errors, None
+
+            # If no syntax errors, proceed with semantic analysis
             semantic_analyzer = SemanticAnalyzer()
             walker = ParseTreeWalker()
             walker.walk(semantic_analyzer, tree)
-            
-            # Return results
-            has_errors = semantic_analyzer.has_errors()
-            errors = semantic_analyzer.get_errors()
-            
-            return not has_errors, errors
+
+            has_semantic_errors = semantic_analyzer.has_errors()
+            semantic_errors = semantic_analyzer.get_errors()
+            return (not has_semantic_errors), semantic_errors, semantic_analyzer
             
         except Exception as e:
-            return False, [f"Exception during compilation: {str(e)}"]
+            return False, [f"Exception during compilation: {str(e)}"], None
+
+    def _symbol_table_to_string(self, symbol_table):
+        """Construye una representación en texto de la tabla de símbolos"""
+        if not symbol_table:
+            return "<No symbol table>"
+        lines = ["=== SYMBOL TABLE ==="]
+
+        def visit_scope(scope, indent=0):
+            pref = "  " * indent
+            lines.append(f"{pref}+ Ámbito: {scope.name} ({len(scope.symbols)} símbolo(s))")
+            if scope.symbols:
+                lines.append(f"{pref}  {'Nombre':<15} {'Tipo':<15} {'Clase':<12} {'Const':<6} {'Init':<6}")
+                lines.append(f"{pref}  {'-'*60}")
+            for sym in scope.symbols.values():
+                tipo = getattr(sym.type, 'value', str(sym.type))
+                clase = type(sym).__name__.replace("Symbol", "").lower() or "símbolo"
+                if tipo == 'array' and getattr(sym, 'array_type', None):
+                    tipo = f"{sym.array_type.value}{'[]' * sym.array_dimensions}"
+                is_const = "Sí" if getattr(sym, 'is_constant', False) else "No"
+                is_init = "Sí" if getattr(sym, 'is_initialized', False) else "No"
+                lines.append(f"{pref}  {sym.name:<15} {tipo:<15} {clase:<12} {is_const:<6} {is_init:<6}")
+
+            for child in getattr(scope, 'children', []):
+                lines.append("")  # Espacio entre ámbitos
+                visit_scope(child, indent + 1)
+
+        visit_scope(symbol_table.global_scope)
+        lines.append("==================")
+        return "\n".join(lines)
+
+    def show_symbol_table(self):
+        """Muestra la tabla de símbolos en una nueva ventana"""
+        if not self.last_analyzer:
+            messagebox.showinfo("Symbol Table", "(No se ha compilado todavía)")
+            return
+
+        symbol_table = getattr(self.last_analyzer, 'symbol_table', None)
+        table_text = self._symbol_table_to_string(symbol_table)
+
+        # Crear una nueva ventana para mostrar la tabla de símbolos
+        symbol_table_window = tk.Toplevel(self.root)
+        symbol_table_window.title("Symbol Table")
+        symbol_table_window.geometry("600x400")
+
+        # Crear un área de texto desplazable para mostrar la tabla
+        text_area = scrolledtext.ScrolledText(symbol_table_window, wrap=tk.WORD, font=('Consolas', 10))
+        text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Insertar el texto de la tabla de símbolos
+        text_area.insert(tk.END, table_text)
+        text_area.config(state=tk.DISABLED)
     
     def clear_output(self):
         """Clear the output area"""
