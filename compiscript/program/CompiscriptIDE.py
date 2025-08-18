@@ -261,16 +261,33 @@ class CompiscriptIDE:
         else:  # Cancel
             return False
     
+    def _normalize_newlines(self, text: str) -> str:
+        """Convierte secuencias escapadas como "\\n" y "\\t" en caracteres reales para mejor visualización."""
+        if not isinstance(text, str):
+            try:
+                text = str(text)
+            except Exception:
+                return text
+        # Reemplazo simple para '\\n' -> '\n' y '\\t' -> '\t'
+        if '\\n' in text or '\\t' in text:
+            try:
+                # Use unicode_escape to interpret common escape sequences
+                return text.encode('utf-8').decode('unicode_escape')
+            except Exception:
+                # Fallback a reemplazos simples
+                return text.replace('\\n', '\n').replace('\\t', '\t')
+        return text
+
     def compile_code(self):
         """Compile the current code"""
         self.clear_output()
-        self.append_output("Starting compilation...\\n", "info")
+        self.append_output("Starting compilation...\n", "info")
         
         # Get code from editor
         code = self.code_editor.get(1.0, tk.END + '-1c')
         
         if not code.strip():
-            self.append_output("Error: No code to compile\\n", "error")
+            self.append_output("Error: No code to compile\n", "error")
             return
         
         # Save to temporary file
@@ -288,16 +305,20 @@ class CompiscriptIDE:
             
             # Display results
             if success:
-                self.append_output("Compilation successful! No semantic errors found.\\n", "success")
+                self.append_output("Compilation successful! No semantic errors found.\n", "success")
                 self.status_var.set("Compilation successful")
             else:
-                self.append_output(f"Compilation failed with {len(errors)} error(s):\\n", "error")
+                self.append_output(f"Compilation failed with {len(errors)} error(s):\n", "error")
                 for i, error in enumerate(errors, 1):
-                    self.append_output(f"{i}. {error}\\n", "error")
+                    clean_err = self._normalize_newlines(error)
+                    # Asegurar que cada error termina con salto de línea real
+                    if not clean_err.endswith('\n'):
+                        clean_err = clean_err + '\n'
+                    self.append_output(f"{i}. {clean_err}", "error")
                 self.status_var.set(f"Compilation failed ({len(errors)} errors)")
         
         except Exception as e:
-            self.append_output(f"Compilation error: {str(e)}\\n", "error")
+            self.append_output(f"Compilation error: {str(e)}\n", "error")
             self.status_var.set("Compilation error")
     
     def run_semantic_analysis(self, file_path):
