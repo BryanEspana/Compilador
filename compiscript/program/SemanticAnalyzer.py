@@ -36,11 +36,23 @@ class SemanticAnalyzer(CompiscriptListener):
     
     def add_error(self, ctx, message: str):
         """Add a semantic error with context information"""
-        line = ctx.start.line if ctx and ctx.start else "unknown"
-        column = ctx.start.column if ctx and ctx.start else "unknown"
-        error_msg = f"Line {line}:{column} - {message}"
-        self.errors.append(error_msg)
-        self.symbol_table.add_error(error_msg)
+        try:
+            line = ctx.start.line if ctx and ctx.start else "unknown"
+            column = ctx.start.column if ctx and ctx.start else "unknown"
+            # Ensure message is properly encoded
+            if isinstance(message, bytes):
+                message = message.decode('utf-8', errors='replace')
+            elif not isinstance(message, str):
+                message = str(message)
+            
+            error_msg = f"Line {line}:{column} - {message}"
+            self.errors.append(error_msg)
+            self.symbol_table.add_error(error_msg)
+        except Exception as e:
+            # Fallback error handling
+            fallback_msg = f"Error processing semantic error: {str(e)}"
+            self.errors.append(fallback_msg)
+            self.symbol_table.add_error(fallback_msg)
     
     def get_type_from_string(self, type_str: str) -> SymbolType:
         """Convert string type to SymbolType enum"""
@@ -142,7 +154,16 @@ class SemanticAnalyzer(CompiscriptListener):
         # Check initializer
         if ctx.initializer():
             symbol.is_initialized = True
-            # Type checking will be done in assignment handling
+            # Validate initializer type compatibility
+            expr_type = self.expression_evaluator.evaluate_expression(ctx.initializer().expression())
+            
+            # If variable has explicit type annotation, check compatibility
+            if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
+                if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
+                    self.add_error(ctx, f"Cannot initialize variable '{var_name}' of type {symbol.type.value} with value of type {expr_type.value}")
+            # If no explicit type, infer from initializer
+            elif symbol.type == SymbolType.NULL and expr_type != SymbolType.NULL:
+                symbol.type = expr_type
         
         self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
     
@@ -166,6 +187,17 @@ class SemanticAnalyzer(CompiscriptListener):
             type_text = ctx.typeAnnotation().type_().getText()
             const_type = self.get_type_from_string(type_text)
         
+        # Validate initializer type
+        expr_type = self.expression_evaluator.evaluate_expression(ctx.expression())
+        
+        # If constant has explicit type annotation, check compatibility
+        if const_type != SymbolType.NULL and expr_type != SymbolType.NULL:
+            if not self.expression_evaluator.are_types_compatible(const_type, expr_type, "assignment"):
+                self.add_error(ctx, f"Cannot initialize constant '{const_name}' of type {const_type.value} with value of type {expr_type.value}")
+        # If no explicit type, infer from initializer
+        elif const_type == SymbolType.NULL and expr_type != SymbolType.NULL:
+            const_type = expr_type
+
         symbol = Symbol(const_name, const_type, is_constant=True, is_initialized=True)
         self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
     

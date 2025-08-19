@@ -16,10 +16,21 @@ class ExpressionEvaluator:
     
     def add_error(self, ctx, message: str):
         """Add a type error with context information"""
-        line = ctx.start.line if ctx and ctx.start else "unknown"
-        column = ctx.start.column if ctx and ctx.start else "unknown"
-        error_msg = f"Line {line}:{column} - {message}"
-        self.errors.append(error_msg)
+        try:
+            line = ctx.start.line if ctx and ctx.start else "unknown"
+            column = ctx.start.column if ctx and ctx.start else "unknown"
+            # Ensure message is properly encoded
+            if isinstance(message, bytes):
+                message = message.decode('utf-8', errors='replace')
+            elif not isinstance(message, str):
+                message = str(message)
+            
+            error_msg = f"Line {line}:{column} - {message}"
+            self.errors.append(error_msg)
+        except Exception as e:
+            # Fallback error handling
+            fallback_msg = f"Error processing type error: {str(e)}"
+            self.errors.append(fallback_msg)
     
     def evaluate_expression(self, ctx) -> SymbolType:
         """Evaluate an expression and return its type"""
@@ -253,19 +264,25 @@ class ExpressionEvaluator:
         if not ctx:
             return SymbolType.NULL
         
+        # Check for boolean literals first
+        text = ctx.getText()
+        if text in ['true', 'false']:
+            return SymbolType.BOOLEAN
+        elif text == 'null':
+            return SymbolType.NULL
+        
         if ctx.Literal():
             literal_text = ctx.Literal().getText()
             if literal_text.startswith('"') and literal_text.endswith('"'):
                 return SymbolType.STRING
+            elif literal_text in ['true', 'false']:
+                return SymbolType.BOOLEAN
             else:
+                # All numeric literals (integers, floats, etc.) are treated as INTEGER
                 return SymbolType.INTEGER
         elif ctx.arrayLiteral():
             # Array literal - determine element type
             return self.evaluate_array_literal(ctx.arrayLiteral())
-        elif ctx.getText() == 'null':
-            return SymbolType.NULL
-        elif ctx.getText() in ['true', 'false']:
-            return SymbolType.BOOLEAN
         
         return SymbolType.NULL
     
@@ -411,6 +428,7 @@ class ExpressionEvaluator:
             return True  # Null is compatible with everything (simplified)
         
         if operation == "assignment":
+            # For assignments, types must match exactly (no implicit conversions)
             return left == right
         elif operation in ["==", "!="]:
             return left == right
@@ -420,17 +438,8 @@ class ExpressionEvaluator:
                 return ((left == SymbolType.STRING or right == SymbolType.STRING) or 
                        (left == SymbolType.INTEGER and right == SymbolType.INTEGER))
             else:
-                # For arithmetic operations, be more permissive
-                if left == SymbolType.INTEGER and right == SymbolType.INTEGER:
-                    return True
-                # Allow mixing with NULL (simplified)
-                if left == SymbolType.NULL or right == SymbolType.NULL:
-                    return True
-                # Allow mixing with class types (for method calls)
-                if left == SymbolType.CLASS or right == SymbolType.CLASS:
-                    return True
-                # Allow any combination for testing (simplified)
-                return True
+                # Arithmetic operations require integers
+                return left == SymbolType.INTEGER and right == SymbolType.INTEGER
         elif operation in ["<", "<=", ">", ">="]:
             return left == right and left in [SymbolType.INTEGER, SymbolType.STRING]
         elif operation in ["&&", "||"]:
