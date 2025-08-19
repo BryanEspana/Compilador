@@ -13,6 +13,7 @@ class ExpressionEvaluator:
     def __init__(self, symbol_table: SymbolTable):
         self.symbol_table = symbol_table
         self.errors: List[str] = []
+        self.suppress_assignment_errors = False  # Flag to suppress assignment error reporting
     
     def add_error(self, ctx, message: str):
         """Add a type error with context information"""
@@ -32,16 +33,31 @@ class ExpressionEvaluator:
             fallback_msg = f"Error processing type error: {str(e)}"
             self.errors.append(fallback_msg)
     
+    def evaluate_expression_type_only(self, ctx) -> SymbolType:
+        """Evaluate an expression and return its type without reporting assignment errors"""
+        old_suppress = self.suppress_assignment_errors
+        self.suppress_assignment_errors = True
+        try:
+            result = self.evaluate_expression(ctx)
+            return result
+        finally:
+            self.suppress_assignment_errors = old_suppress
+    
     def evaluate_expression(self, ctx) -> SymbolType:
         """Evaluate an expression and return its type"""
         if not ctx:
             return SymbolType.NULL
         
-        # Handle different expression types
-        if isinstance(ctx, CompiscriptParser.ExpressionContext):
-            return self.evaluate_assignment_expr(ctx.assignmentExpr())
-        
-        return SymbolType.NULL
+        try:
+            # Handle different expression types
+            if isinstance(ctx, CompiscriptParser.ExpressionContext):
+                return self.evaluate_assignment_expr(ctx.assignmentExpr())
+            
+            return SymbolType.NULL
+        except Exception as e:
+            # Add error but continue processing
+            self.add_error(ctx, f"Error evaluating expression: {str(e)}")
+            return SymbolType.NULL
     
     def evaluate_assignment_expr(self, ctx) -> SymbolType:
         """Evaluate assignment expressions"""
@@ -54,9 +70,10 @@ class ExpressionEvaluator:
             left_type = self.evaluate_left_hand_side(ctx.lhs)
             right_type = self.evaluate_assignment_expr(ctx.assignmentExpr())
             
-            # Check type compatibility
+            # Check type compatibility (only report if not suppressed)
             if not self.are_types_compatible(left_type, right_type, "assignment"):
-                self.add_error(ctx, f"Cannot assign {right_type.value} to {left_type.value}")
+                if not self.suppress_assignment_errors:
+                    self.add_error(ctx, f"Cannot assign {right_type.value} to {left_type.value}")
             
             return left_type
         else:

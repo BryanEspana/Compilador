@@ -47,12 +47,11 @@ class SemanticAnalyzer(CompiscriptListener):
             
             error_msg = f"Line {line}:{column} - {message}"
             self.errors.append(error_msg)
-            self.symbol_table.add_error(error_msg)
+            # Don't add to symbol_table to avoid duplication
         except Exception as e:
             # Fallback error handling
             fallback_msg = f"Error processing semantic error: {str(e)}"
             self.errors.append(fallback_msg)
-            self.symbol_table.add_error(fallback_msg)
     
     def get_type_from_string(self, type_str: str) -> SymbolType:
         """Convert string type to SymbolType enum"""
@@ -127,79 +126,85 @@ class SemanticAnalyzer(CompiscriptListener):
     # Variable declarations
     def enterVariableDeclaration(self, ctx: CompiscriptParser.VariableDeclarationContext):
         """Handle variable declarations (let/var)"""
-        var_name = ctx.Identifier().getText()
-        
-        # Check if already declared in current scope
-        if self.symbol_table.lookup_local(var_name):
-            self.add_error(ctx, f"Variable '{var_name}' already declared in current scope")
-            return
-        
-        # Determine type
-        var_type = SymbolType.NULL
-        if ctx.typeAnnotation():
-            type_text = ctx.typeAnnotation().type_().getText()
-            if type_text.endswith('[]'):
-                # Array type
-                base_type_text = type_text.replace('[]', '')
-                base_type = self.get_type_from_string(base_type_text)
-                dimensions = type_text.count('[]')
-                symbol = Symbol(var_name, SymbolType.ARRAY, 
-                              array_type=base_type, array_dimensions=dimensions)
-            else:
-                var_type = self.get_type_from_string(type_text)
-                symbol = Symbol(var_name, var_type)
-        else:
-            symbol = Symbol(var_name, SymbolType.NULL)  # Type will be inferred from initializer
-        
-        # Check initializer
-        if ctx.initializer():
-            symbol.is_initialized = True
-            # Validate initializer type compatibility
-            expr_type = self.expression_evaluator.evaluate_expression(ctx.initializer().expression())
+        try:
+            var_name = ctx.Identifier().getText()
             
-            # If variable has explicit type annotation, check compatibility
-            if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
-                if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
-                    self.add_error(ctx, f"Cannot initialize variable '{var_name}' of type {symbol.type.value} with value of type {expr_type.value}")
-            # If no explicit type, infer from initializer
-            elif symbol.type == SymbolType.NULL and expr_type != SymbolType.NULL:
-                symbol.type = expr_type
-        
-        self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
+            # Check if already declared in current scope
+            if self.symbol_table.lookup_local(var_name):
+                self.add_error(ctx, f"Variable '{var_name}' already declared in current scope")
+                return
+            
+            # Determine type
+            var_type = SymbolType.NULL
+            if ctx.typeAnnotation():
+                type_text = ctx.typeAnnotation().type_().getText()
+                if type_text.endswith('[]'):
+                    # Array type
+                    base_type_text = type_text.replace('[]', '')
+                    base_type = self.get_type_from_string(base_type_text)
+                    dimensions = type_text.count('[]')
+                    symbol = Symbol(var_name, SymbolType.ARRAY, 
+                                  array_type=base_type, array_dimensions=dimensions)
+                else:
+                    var_type = self.get_type_from_string(type_text)
+                    symbol = Symbol(var_name, var_type)
+            else:
+                symbol = Symbol(var_name, SymbolType.NULL)  # Type will be inferred from initializer
+            
+            # Check initializer
+            if ctx.initializer():
+                symbol.is_initialized = True
+                # Validate initializer type compatibility
+                expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.initializer().expression())
+                
+                # If variable has explicit type annotation, check compatibility
+                if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
+                    if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
+                        self.add_error(ctx, f"Cannot initialize variable '{var_name}' of type {symbol.type.value} with value of type {expr_type.value}")
+                # If no explicit type, infer from initializer
+                elif symbol.type == SymbolType.NULL and expr_type != SymbolType.NULL:
+                    symbol.type = expr_type
+            
+            self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
+        except Exception as e:
+            self.add_error(ctx, f"Error processing variable declaration: {str(e)}")
     
     def enterConstantDeclaration(self, ctx: CompiscriptParser.ConstantDeclarationContext):
         """Handle constant declarations (const)"""
-        const_name = ctx.Identifier().getText()
-        
-        # Check if already declared in current scope
-        if self.symbol_table.lookup_local(const_name):
-            self.add_error(ctx, f"Constant '{const_name}' already declared in current scope")
-            return
-        
-        # Constants must be initialized
-        if not ctx.expression():
-            self.add_error(ctx, f"Constant '{const_name}' must be initialized")
-            return
-        
-        # Determine type
-        const_type = SymbolType.NULL
-        if ctx.typeAnnotation():
-            type_text = ctx.typeAnnotation().type_().getText()
-            const_type = self.get_type_from_string(type_text)
-        
-        # Validate initializer type
-        expr_type = self.expression_evaluator.evaluate_expression(ctx.expression())
-        
-        # If constant has explicit type annotation, check compatibility
-        if const_type != SymbolType.NULL and expr_type != SymbolType.NULL:
-            if not self.expression_evaluator.are_types_compatible(const_type, expr_type, "assignment"):
-                self.add_error(ctx, f"Cannot initialize constant '{const_name}' of type {const_type.value} with value of type {expr_type.value}")
-        # If no explicit type, infer from initializer
-        elif const_type == SymbolType.NULL and expr_type != SymbolType.NULL:
-            const_type = expr_type
+        try:
+            const_name = ctx.Identifier().getText()
+            
+            # Check if already declared in current scope
+            if self.symbol_table.lookup_local(const_name):
+                self.add_error(ctx, f"Constant '{const_name}' already declared in current scope")
+                return
+            
+            # Constants must be initialized
+            if not ctx.expression():
+                self.add_error(ctx, f"Constant '{const_name}' must be initialized")
+                return
+            
+            # Determine type
+            const_type = SymbolType.NULL
+            if ctx.typeAnnotation():
+                type_text = ctx.typeAnnotation().type_().getText()
+                const_type = self.get_type_from_string(type_text)
+            
+            # Validate initializer type
+            expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression())
+            
+            # If constant has explicit type annotation, check compatibility
+            if const_type != SymbolType.NULL and expr_type != SymbolType.NULL:
+                if not self.expression_evaluator.are_types_compatible(const_type, expr_type, "assignment"):
+                    self.add_error(ctx, f"Cannot initialize constant '{const_name}' of type {const_type.value} with value of type {expr_type.value}")
+            # If no explicit type, infer from initializer
+            elif const_type == SymbolType.NULL and expr_type != SymbolType.NULL:
+                const_type = expr_type
 
-        symbol = Symbol(const_name, const_type, is_constant=True, is_initialized=True)
-        self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
+            symbol = Symbol(const_name, const_type, is_constant=True, is_initialized=True)
+            self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
+        except Exception as e:
+            self.add_error(ctx, f"Error processing constant declaration: {str(e)}")
     
     # Function declarations
     def enterFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
@@ -394,36 +399,62 @@ class SemanticAnalyzer(CompiscriptListener):
     # Expression handling (simplified - would need full implementation)
     def enterAssignment(self, ctx: CompiscriptParser.AssignmentContext):
         """Handle assignments"""
-        var_name = ctx.Identifier().getText()
-        
-        # Check if variable exists
-        symbol = self.symbol_table.lookup(var_name)
-        if not symbol:
-            self.add_error(ctx, f"Variable '{var_name}' not declared")
-            return
-        
-        # Check if trying to assign to constant
-        if symbol.is_constant:
-            self.add_error(ctx, f"Cannot assign to constant '{var_name}'")
-            return
-        
-        # Mark as initialized
-        symbol.is_initialized = True
-        
-        # Validate assignment expression type
-        if ctx.expression():
-            expr_type = self.expression_evaluator.evaluate_expression(ctx.expression())
-            if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
-                if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
-                    self.add_error(ctx, f"Cannot assign {expr_type.value} to variable '{var_name}' of type {symbol.type.value}")
+        try:
+            var_name = ctx.Identifier().getText()
+            
+            # Check if variable exists
+            symbol = self.symbol_table.lookup(var_name)
+            if not symbol:
+                self.add_error(ctx, f"Variable '{var_name}' not declared")
+                return
+            
+            # Check if trying to assign to constant
+            if symbol.is_constant:
+                self.add_error(ctx, f"Cannot assign to constant '{var_name}'")
+                return
+            
+            # Mark as initialized
+            symbol.is_initialized = True
+            
+            # Validate assignment expression type
+            if ctx.expression():
+                expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression())
+                if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
+                    if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
+                        self.add_error(ctx, f"Cannot assign {expr_type.value} to variable '{var_name}' of type {symbol.type.value}")
+        except Exception as e:
+            self.add_error(ctx, f"Error processing assignment: {str(e)}")
     
     def has_errors(self) -> bool:
         """Check if there are semantic errors"""
-        return len(self.errors) > 0 or self.symbol_table.has_errors() or self.expression_evaluator.has_errors()
+        return (len(self.errors) > 0 or 
+                self.symbol_table.has_errors() or 
+                self.expression_evaluator.has_errors())
     
     def get_errors(self) -> List[str]:
-        """Get all semantic errors"""
-        return self.errors + self.symbol_table.get_errors() + self.expression_evaluator.get_errors()
+        """Get all semantic errors without duplicates"""
+        all_errors = []
+        seen_errors = set()
+        
+        # Add errors from semantic analyzer
+        for error in self.errors:
+            if error not in seen_errors:
+                all_errors.append(error)
+                seen_errors.add(error)
+        
+        # Add errors from symbol table (if not already seen)
+        for error in self.symbol_table.get_errors():
+            if error not in seen_errors:
+                all_errors.append(error)
+                seen_errors.add(error)
+        
+        # Add errors from expression evaluator (if not already seen)
+        for error in self.expression_evaluator.get_errors():
+            if error not in seen_errors:
+                all_errors.append(error)
+                seen_errors.add(error)
+        
+        return all_errors
     
     def print_errors(self):
         """Print all semantic errors"""
