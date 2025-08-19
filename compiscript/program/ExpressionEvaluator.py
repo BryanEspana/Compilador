@@ -200,13 +200,14 @@ class ExpressionEvaluator:
             operator = ctx.getChild(2 * i - 1).getText()  # Get operator
             
             if operator == '+':
-                # Addition allows integer + integer or string concatenation
-                if left_type == SymbolType.STRING or right_type == SymbolType.STRING:
-                    left_type = SymbolType.STRING  # String concatenation
-                elif left_type == SymbolType.INTEGER and right_type == SymbolType.INTEGER:
+                # Addition: ONLY integer + integer OR string + string allowed
+                if left_type == SymbolType.INTEGER and right_type == SymbolType.INTEGER:
                     left_type = SymbolType.INTEGER  # Integer addition
+                elif left_type == SymbolType.STRING and right_type == SymbolType.STRING:
+                    left_type = SymbolType.STRING  # String concatenation
                 else:
-                    self.add_error(ctx, f"Cannot add {left_type.value} and {right_type.value}")
+                    # All other combinations are invalid (including mixing types)
+                    self.add_error(ctx, f"Cannot add {left_type.value} and {right_type.value}. Only integer+integer or string+string are allowed.")
                     left_type = SymbolType.NULL
             else:  # operator == '-'
                 if left_type != SymbolType.INTEGER or right_type != SymbolType.INTEGER:
@@ -451,9 +452,9 @@ class ExpressionEvaluator:
             return left == right
         elif operation in ["+", "-", "*", "/", "%"]:
             if operation == "+":
-                # String concatenation or integer addition
-                return ((left == SymbolType.STRING or right == SymbolType.STRING) or 
-                       (left == SymbolType.INTEGER and right == SymbolType.INTEGER))
+                # Addition: ONLY integer + integer OR string + string
+                return ((left == SymbolType.INTEGER and right == SymbolType.INTEGER) or
+                       (left == SymbolType.STRING and right == SymbolType.STRING))
             else:
                 # Arithmetic operations require integers
                 return left == SymbolType.INTEGER and right == SymbolType.INTEGER
