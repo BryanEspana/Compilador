@@ -33,6 +33,18 @@ class SemanticAnalyzer(CompiscriptListener):
             # String concatenation: +
             'string_concat': {SymbolType.STRING, SymbolType.INTEGER, SymbolType.BOOLEAN}
         }
+        
+        # Reserved keywords that cannot be used as identifiers
+        self.reserved_keywords = {
+            'let', 'var', 'const', 'function', 'class', 'if', 'else', 'while', 'do',
+            'for', 'foreach', 'in', 'break', 'continue', 'return', 'try', 'catch',
+            'throw', 'switch', 'case', 'default', 'new', 'this', 'super', 'null',
+            'true', 'false', 'print', 'integer', 'string', 'boolean', 'void'
+        }
+    
+    def is_reserved_identifier(self, name: str) -> bool:
+        """Check if an identifier is a reserved keyword"""
+        return name in self.reserved_keywords
     
     def add_error(self, ctx, message: str):
         """Add a semantic error with context information"""
@@ -129,10 +141,22 @@ class SemanticAnalyzer(CompiscriptListener):
         try:
             var_name = ctx.Identifier().getText()
             
+            # Check if it's a reserved keyword
+            if self.is_reserved_identifier(var_name):
+                self.add_error(ctx, f"'{var_name}' is a reserved keyword and cannot be used as a variable name")
+                return
+            
             # Check if already declared in current scope
             if self.symbol_table.lookup_local(var_name):
-                self.add_error(ctx, f"Variable '{var_name}' already declared in current scope")
+                existing_symbol = self.symbol_table.lookup_local(var_name)
+                self.add_error(ctx, f"Variable '{var_name}' already declared in current scope at line {existing_symbol.line_declared}")
                 return
+            
+            # Check if shadowing a variable from outer scope (warning/info)
+            outer_symbol = self.symbol_table.lookup(var_name)
+            if outer_symbol and outer_symbol != self.symbol_table.lookup_local(var_name):
+                # This is shadowing - could be a warning, but we'll allow it
+                pass
             
             # Determine type
             var_type = SymbolType.NULL
@@ -142,11 +166,17 @@ class SemanticAnalyzer(CompiscriptListener):
                     # Array type
                     base_type_text = type_text.replace('[]', '')
                     base_type = self.get_type_from_string(base_type_text)
+                    if base_type == SymbolType.NULL:
+                        self.add_error(ctx, f"Unknown array element type '{base_type_text}'")
+                        return
                     dimensions = type_text.count('[]')
                     symbol = Symbol(var_name, SymbolType.ARRAY, 
                                   array_type=base_type, array_dimensions=dimensions)
                 else:
                     var_type = self.get_type_from_string(type_text)
+                    if var_type == SymbolType.NULL:
+                        self.add_error(ctx, f"Unknown type '{type_text}'")
+                        return
                     symbol = Symbol(var_name, var_type)
             else:
                 symbol = Symbol(var_name, SymbolType.NULL)  # Type will be inferred from initializer
@@ -174,9 +204,15 @@ class SemanticAnalyzer(CompiscriptListener):
         try:
             const_name = ctx.Identifier().getText()
             
+            # Check if it's a reserved keyword
+            if self.is_reserved_identifier(const_name):
+                self.add_error(ctx, f"'{const_name}' is a reserved keyword and cannot be used as a constant name")
+                return
+            
             # Check if already declared in current scope
             if self.symbol_table.lookup_local(const_name):
-                self.add_error(ctx, f"Constant '{const_name}' already declared in current scope")
+                existing_symbol = self.symbol_table.lookup_local(const_name)
+                self.add_error(ctx, f"Constant '{const_name}' already declared in current scope at line {existing_symbol.line_declared}")
                 return
             
             # Constants must be initialized
@@ -189,6 +225,9 @@ class SemanticAnalyzer(CompiscriptListener):
             if ctx.typeAnnotation():
                 type_text = ctx.typeAnnotation().type_().getText()
                 const_type = self.get_type_from_string(type_text)
+                if const_type == SymbolType.NULL:
+                    self.add_error(ctx, f"Unknown type '{type_text}'")
+                    return
             
             # Validate initializer type
             expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression())
@@ -209,43 +248,76 @@ class SemanticAnalyzer(CompiscriptListener):
     # Function declarations
     def enterFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
         """Handle function declarations"""
-        func_name = ctx.Identifier().getText()
-        
-        # Check if already declared in current scope
-        if self.symbol_table.lookup_local(func_name):
-            self.add_error(ctx, f"Function '{func_name}' already declared in current scope")
-            return
-        
-        # Determine return type
-        return_type = SymbolType.VOID
-        if ctx.type_():
-            return_type_text = ctx.type_().getText()
-            return_type = self.get_type_from_string(return_type_text)
-        
-        # Create function symbol
-        func_symbol = FunctionSymbol(func_name, return_type)
-        
-        # Add parameters
-        if ctx.parameters():
-            for param_ctx in ctx.parameters().parameter():
-                param_name = param_ctx.Identifier().getText()
-                param_type = SymbolType.NULL
-                if param_ctx.type_():
-                    param_type_text = param_ctx.type_().getText()
-                    param_type = self.get_type_from_string(param_type_text)
-                func_symbol.add_parameter(param_name, param_type)
-        
-        # Define function in current scope
-        self.symbol_table.define(func_symbol, ctx.start.line, ctx.start.column)
-        
-        # Enter function scope
-        self.symbol_table.enter_scope(f"function_{func_name}")
-        self.current_function = func_symbol
-        
-        # Add parameters to function scope
-        for param_name, param_type in func_symbol.parameters:
-            param_symbol = Symbol(param_name, param_type, is_initialized=True)
-            self.symbol_table.define(param_symbol)
+        try:
+            func_name = ctx.Identifier().getText()
+            
+            # Check if it's a reserved keyword
+            if self.is_reserved_identifier(func_name):
+                self.add_error(ctx, f"'{func_name}' is a reserved keyword and cannot be used as a function name")
+                return
+            
+            # Check if already declared in current scope
+            if self.symbol_table.lookup_local(func_name):
+                existing_symbol = self.symbol_table.lookup_local(func_name)
+                self.add_error(ctx, f"Function '{func_name}' already declared in current scope at line {existing_symbol.line_declared}")
+                return
+            
+            # Determine return type
+            return_type = SymbolType.VOID
+            if ctx.type_():
+                return_type_text = ctx.type_().getText()
+                return_type = self.get_type_from_string(return_type_text)
+                if return_type == SymbolType.NULL:
+                    self.add_error(ctx, f"Unknown return type '{return_type_text}'")
+                    return
+            
+            # Create function symbol
+            func_symbol = FunctionSymbol(func_name, return_type)
+            
+            # Process parameters and check for duplicates
+            param_names = set()
+            if ctx.parameters():
+                for param_ctx in ctx.parameters().parameter():
+                    param_name = param_ctx.Identifier().getText()
+                    
+                    # Check for duplicate parameter names
+                    if param_name in param_names:
+                        self.add_error(ctx, f"Duplicate parameter name '{param_name}' in function '{func_name}'")
+                        continue
+                    param_names.add(param_name)
+                    
+                    # Check if parameter name is reserved
+                    if self.is_reserved_identifier(param_name):
+                        self.add_error(ctx, f"Parameter name '{param_name}' is a reserved keyword")
+                        continue
+                    
+                    param_type = SymbolType.NULL
+                    if param_ctx.type_():
+                        param_type_text = param_ctx.type_().getText()
+                        param_type = self.get_type_from_string(param_type_text)
+                        if param_type == SymbolType.NULL:
+                            self.add_error(ctx, f"Unknown parameter type '{param_type_text}' for parameter '{param_name}'")
+                            continue
+                    else:
+                        self.add_error(ctx, f"Parameter '{param_name}' must have a type annotation")
+                        continue
+                    
+                    func_symbol.add_parameter(param_name, param_type)
+            
+            # Define function in current scope
+            self.symbol_table.define(func_symbol, ctx.start.line, ctx.start.column)
+            
+            # Enter function scope
+            self.symbol_table.enter_scope(f"function_{func_name}")
+            self.current_function = func_symbol
+            
+            # Add parameters to function scope
+            for param_name, param_type in func_symbol.parameters:
+                param_symbol = Symbol(param_name, param_type, is_initialized=True)
+                self.symbol_table.define(param_symbol, ctx.start.line, ctx.start.column)
+                
+        except Exception as e:
+            self.add_error(ctx, f"Error processing function declaration: {str(e)}")
     
     def exitFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
         """Exit function scope"""
@@ -261,28 +333,45 @@ class SemanticAnalyzer(CompiscriptListener):
     # Class declarations
     def enterClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
         """Handle class declarations"""
-        class_name = ctx.Identifier(0).getText()  # First identifier is class name
-        
-        # Check if already declared
-        if self.symbol_table.lookup_local(class_name):
-            self.add_error(ctx, f"Class '{class_name}' already declared in current scope")
-            return
-        
-        # Check for inheritance
-        parent_class = None
-        if len(ctx.Identifier()) > 1:  # Has parent class
-            parent_class = ctx.Identifier(1).getText()
-            parent_symbol = self.symbol_table.lookup(parent_class)
-            if not parent_symbol or parent_symbol.type != SymbolType.CLASS:
-                self.add_error(ctx, f"Parent class '{parent_class}' not found or not a class")
-        
-        # Create class symbol
-        class_symbol = ClassSymbol(class_name, parent_class)
-        self.symbol_table.define(class_symbol, ctx.start.line, ctx.start.column)
-        
-        # Enter class scope
-        self.symbol_table.enter_scope(f"class_{class_name}")
-        self.current_class = class_symbol
+        try:
+            class_name = ctx.Identifier(0).getText()  # First identifier is class name
+            
+            # Check if it's a reserved keyword
+            if self.is_reserved_identifier(class_name):
+                self.add_error(ctx, f"'{class_name}' is a reserved keyword and cannot be used as a class name")
+                return
+            
+            # Check if already declared
+            if self.symbol_table.lookup_local(class_name):
+                existing_symbol = self.symbol_table.lookup_local(class_name)
+                self.add_error(ctx, f"Class '{class_name}' already declared in current scope at line {existing_symbol.line_declared}")
+                return
+            
+            # Check for inheritance
+            parent_class = None
+            if len(ctx.Identifier()) > 1:  # Has parent class
+                parent_class = ctx.Identifier(1).getText()
+                parent_symbol = self.symbol_table.lookup(parent_class)
+                if not parent_symbol:
+                    self.add_error(ctx, f"Parent class '{parent_class}' not found")
+                    return
+                elif parent_symbol.type != SymbolType.CLASS:
+                    self.add_error(ctx, f"'{parent_class}' is not a class")
+                    return
+                elif parent_class == class_name:
+                    self.add_error(ctx, f"Class '{class_name}' cannot inherit from itself")
+                    return
+            
+            # Create class symbol
+            class_symbol = ClassSymbol(class_name, parent_class)
+            self.symbol_table.define(class_symbol, ctx.start.line, ctx.start.column)
+            
+            # Enter class scope
+            self.symbol_table.enter_scope(f"class_{class_name}")
+            self.current_class = class_symbol
+            
+        except Exception as e:
+            self.add_error(ctx, f"Error processing class declaration: {str(e)}")
     
     def exitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
         """Exit class scope"""
@@ -402,15 +491,23 @@ class SemanticAnalyzer(CompiscriptListener):
         try:
             var_name = ctx.Identifier().getText()
             
-            # Check if variable exists
+            # Check if variable exists (in any scope)
             symbol = self.symbol_table.lookup(var_name)
             if not symbol:
-                self.add_error(ctx, f"Variable '{var_name}' not declared")
+                self.add_error(ctx, f"Variable '{var_name}' is not declared")
+                return
+            
+            # Check if the symbol is actually a variable (not a function or class)
+            if symbol.type == SymbolType.FUNCTION:
+                self.add_error(ctx, f"Cannot assign to function '{var_name}'")
+                return
+            elif symbol.type == SymbolType.CLASS:
+                self.add_error(ctx, f"Cannot assign to class '{var_name}'")
                 return
             
             # Check if trying to assign to constant
             if symbol.is_constant:
-                self.add_error(ctx, f"Cannot assign to constant '{var_name}'")
+                self.add_error(ctx, f"Cannot assign to constant '{var_name}' (declared at line {symbol.line_declared})")
                 return
             
             # Mark as initialized

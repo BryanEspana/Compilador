@@ -353,7 +353,10 @@ class ExpressionEvaluator:
                     self.add_error(ctx, f"Undefined identifier '{var_name}'")
                     return SymbolType.NULL
                 
-
+                # Check if it's a variable being used before initialization
+                if (symbol.type not in [SymbolType.FUNCTION, SymbolType.CLASS] and 
+                    not symbol.is_initialized and not symbol.is_constant):
+                    self.add_error(ctx, f"Variable '{var_name}' is used before being initialized")
                 
                 if isinstance(symbol, FunctionSymbol):
                     return SymbolType.FUNCTION
