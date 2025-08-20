@@ -324,7 +324,7 @@ class CompiscriptIDE:
     def run_semantic_analysis(self, file_path):
         """Run semantic analysis on a file"""
         try:
-            input_stream = FileStream(file_path)
+            input_stream = FileStream(file_path, encoding='utf-8')
             lexer = CompiscriptLexer(input_stream)
 
             # Collect lexer errors (e.g., invalid tokens)
@@ -351,12 +351,24 @@ class CompiscriptIDE:
             # If no syntax errors, proceed with semantic analysis
             semantic_analyzer = SemanticAnalyzer()
             walker = ParseTreeWalker()
-            walker.walk(semantic_analyzer, tree)
+            
+            try:
+                walker.walk(semantic_analyzer, tree)
+            except UnicodeDecodeError as e:
+                # Handle encoding issues
+                encoding_error = f"Encoding error: {str(e)}. Please ensure the file is saved in UTF-8 format."
+                return False, [encoding_error], None
+            except Exception as e:
+                # Handle other exceptions during semantic analysis
+                analysis_error = f"Error during semantic analysis: {str(e)}"
+                semantic_analyzer.add_error(None, analysis_error)
 
             has_semantic_errors = semantic_analyzer.has_errors()
             semantic_errors = semantic_analyzer.get_errors()
             return (not has_semantic_errors), semantic_errors, semantic_analyzer
             
+        except UnicodeDecodeError as e:
+            return False, [f"File encoding error: {str(e)}. Please save the file in UTF-8 format."], None
         except Exception as e:
             return False, [f"Exception during compilation: {str(e)}"], None
 

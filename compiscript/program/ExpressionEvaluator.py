@@ -13,24 +13,51 @@ class ExpressionEvaluator:
     def __init__(self, symbol_table: SymbolTable):
         self.symbol_table = symbol_table
         self.errors: List[str] = []
+        self.suppress_assignment_errors = False  # Flag to suppress assignment error reporting
     
     def add_error(self, ctx, message: str):
         """Add a type error with context information"""
-        line = ctx.start.line if ctx and ctx.start else "unknown"
-        column = ctx.start.column if ctx and ctx.start else "unknown"
-        error_msg = f"Line {line}:{column} - {message}"
-        self.errors.append(error_msg)
+        try:
+            line = ctx.start.line if ctx and ctx.start else "unknown"
+            column = ctx.start.column if ctx and ctx.start else "unknown"
+            # Ensure message is properly encoded
+            if isinstance(message, bytes):
+                message = message.decode('utf-8', errors='replace')
+            elif not isinstance(message, str):
+                message = str(message)
+            
+            error_msg = f"Line {line}:{column} - {message}"
+            self.errors.append(error_msg)
+        except Exception as e:
+            # Fallback error handling
+            fallback_msg = f"Error processing type error: {str(e)}"
+            self.errors.append(fallback_msg)
+    
+    def evaluate_expression_type_only(self, ctx) -> SymbolType:
+        """Evaluate an expression and return its type without reporting assignment errors"""
+        old_suppress = self.suppress_assignment_errors
+        self.suppress_assignment_errors = True
+        try:
+            result = self.evaluate_expression(ctx)
+            return result
+        finally:
+            self.suppress_assignment_errors = old_suppress
     
     def evaluate_expression(self, ctx) -> SymbolType:
         """Evaluate an expression and return its type"""
         if not ctx:
             return SymbolType.NULL
         
-        # Handle different expression types
-        if isinstance(ctx, CompiscriptParser.ExpressionContext):
-            return self.evaluate_assignment_expr(ctx.assignmentExpr())
-        
-        return SymbolType.NULL
+        try:
+            # Handle different expression types
+            if isinstance(ctx, CompiscriptParser.ExpressionContext):
+                return self.evaluate_assignment_expr(ctx.assignmentExpr())
+            
+            return SymbolType.NULL
+        except Exception as e:
+            # Add error but continue processing
+            self.add_error(ctx, f"Error evaluating expression: {str(e)}")
+            return SymbolType.NULL
     
     def _is_numeric(self, t):
         return t in (SymbolType.INTEGER, SymbolType.FLOAT)
@@ -55,9 +82,10 @@ class ExpressionEvaluator:
             left_type = self.evaluate_left_hand_side(ctx.lhs)
             right_type = self.evaluate_assignment_expr(ctx.assignmentExpr())
             
-            # Check type compatibility
+            # Check type compatibility (only report if not suppressed)
             if not self.are_types_compatible(left_type, right_type, "assignment"):
-                self.add_error(ctx, f"Cannot assign {right_type.value} to {left_type.value}")
+                if not self.suppress_assignment_errors:
+                    self.add_error(ctx, f"Cannot assign {right_type.value} to {left_type.value}")
             
             return left_type
         else:
@@ -190,17 +218,23 @@ class ExpressionEvaluator:
 
         for i in range(1, len(ctx.multiplicativeExpr())):
             right_type = self.evaluate_multiplicative_expr(ctx.multiplicativeExpr(i))
-            op = ctx.getChild(2 * i - 1).getText()  # '+' o '-'
-
-            # Ambos deben ser numéricos
-            if not (is_numeric(left_type) and is_numeric(right_type)):
-                self.add_error(ctx, f"Arithmetic '{op}' requires numeric operands, got {left_type.value} and {right_type.value}")
-                left_type = SymbolType.NULL
-                continue
-
-            # Resultado con promoción a float si aplica
-            left_type = numeric_result(left_type, right_type)
-
+            operator = ctx.getChild(2 * i - 1).getText()  # Get operator
+            
+            if operator == '+':
+                # Addition: ONLY integer + integer OR string + string allowed
+                if left_type == SymbolType.INTEGER and right_type == SymbolType.INTEGER:
+                    left_type = SymbolType.INTEGER  # Integer addition
+                elif left_type == SymbolType.STRING and right_type == SymbolType.STRING:
+                    left_type = SymbolType.STRING  # String concatenation
+                else:
+                    # All other combinations are invalid (including mixing types)
+                    self.add_error(ctx, f"Cannot add {left_type.value} and {right_type.value}. Only integer+integer or string+string are allowed.")
+                    left_type = SymbolType.NULL
+            else:  # operator == '-'
+                if left_type != SymbolType.INTEGER or right_type != SymbolType.INTEGER:
+                    self.add_error(ctx, f"Subtraction requires integers, got {left_type.value} and {right_type.value}")
+                    left_type = SymbolType.NULL
+        
         return left_type
 
     def evaluate_multiplicative_expr(self, ctx) -> SymbolType:
@@ -279,23 +313,26 @@ class ExpressionEvaluator:
         if not ctx:
             return SymbolType.NULL
         
+        # Check for boolean literals first
+        text = ctx.getText()
+        if text in ['true', 'false']:
+            return SymbolType.BOOLEAN
+        elif text == 'null':
+            return SymbolType.NULL
+        
         if ctx.Literal():
             literal_text = ctx.Literal().getText()
             # String: "..."
             if len(literal_text) >= 2 and literal_text[0] == '"' and literal_text[-1] == '"':
                 return SymbolType.STRING
-
-            # Numérico: float si tiene '.' o exponente (e/E); si no, integer
-            if '.' in literal_text or 'e' in literal_text or 'E' in literal_text:
-                return SymbolType.FLOAT
-            return SymbolType.INTEGER
+            elif literal_text in ['true', 'false']:
+                return SymbolType.BOOLEAN
+            else:
+                # All numeric literals (integers, floats, etc.) are treated as INTEGER
+                return SymbolType.INTEGER
         elif ctx.arrayLiteral():
             # Array literal - determine element type
             return self.evaluate_array_literal(ctx.arrayLiteral())
-        elif ctx.getText() == 'null':
-            return SymbolType.NULL
-        elif ctx.getText() in ['true', 'false']:
-            return SymbolType.BOOLEAN
         
         return SymbolType.NULL
     
@@ -348,7 +385,10 @@ class ExpressionEvaluator:
                     self.add_error(ctx, f"Undefined identifier '{var_name}'")
                     return SymbolType.NULL
                 
-
+                # Check if it's a variable being used before initialization
+                if (symbol.type not in [SymbolType.FUNCTION, SymbolType.CLASS] and 
+                    not symbol.is_initialized and not symbol.is_constant):
+                    self.add_error(ctx, f"Variable '{var_name}' is used before being initialized")
                 
                 if isinstance(symbol, FunctionSymbol):
                     return SymbolType.FUNCTION
@@ -441,16 +481,18 @@ class ExpressionEvaluator:
             return False
 
         if operation == "assignment":
-            # Mismo tipo o ensanchamiento integer -> float
-            return (left == right) or (left == SymbolType.FLOAT and right == SymbolType.INTEGER)
-
-        elif operation in ["+", "-", "*", "/", "%"]:
-            # Solo operandos numéricos; el chequeo detallado lo hacen evaluate_additive_expr/multiplicative_expr
-            return self._is_numeric(left) and self._is_numeric(right)
-
+            # For assignments, types must match exactly (no implicit conversions)
+            return left == right
         elif operation in ["==", "!="]:
             return left == right
-
+        elif operation in ["+", "-", "*", "/", "%"]:
+            if operation == "+":
+                # Addition: ONLY integer + integer OR string + string
+                return ((left == SymbolType.INTEGER and right == SymbolType.INTEGER) or
+                       (left == SymbolType.STRING and right == SymbolType.STRING))
+            else:
+                # Arithmetic operations require integers
+                return left == SymbolType.INTEGER and right == SymbolType.INTEGER
         elif operation in ["<", "<=", ">", ">="]:
             return left == right and left in [SymbolType.INTEGER, SymbolType.STRING]
 
