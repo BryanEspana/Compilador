@@ -1,0 +1,283 @@
+// Test de Requisitos Semanticos - SOLO CODIGO CON ERRORES
+// Este archivo DEBE fallar en el analisis semantico
+
+// ========================================
+// 1. ERRORES DEL SISTEMA DE TIPOS
+// ========================================
+
+// 1.1 Verificacion de tipos en operaciones aritmeticas (+, -, *, /)
+function testErroresAritmeticos(): void {
+    let a: integer = 10;
+    let b: integer = 5;
+    
+    // ERRORES: Operaciones con tipos incompatibles
+    let error1: integer = a + "texto";      // ERROR: integer + string
+    let error2: integer = a + true;         // ERROR: integer + boolean
+    let error3: integer = "texto" * b;      // ERROR: string * integer
+    let error4: integer = false / a;        // ERROR: boolean / integer
+}
+
+// 1.2 Verificacion de tipos en operaciones logicas (&&, ||, !)
+function testErroresLogicos(): void {
+    let flag1: boolean = true;
+    let flag2: boolean = false;
+    
+    // ERRORES: Operaciones logicas con tipos incompatibles
+    let error1: boolean = 42 && flag1;     // ERROR: integer && boolean
+    let error2: boolean = flag1 || "texto"; // ERROR: boolean || string
+    let error3: boolean = !42;             // ERROR: !integer
+}
+
+// 1.3 Compatibilidad de tipos en comparaciones (==, !=, <, <=, >, >=)
+function testErroresComparaciones(): void {
+    let a: integer = 10;
+    let b: integer = 20;
+    let texto1: string = "abc";
+    let texto2: string = "def";
+    
+    // ERRORES: Comparaciones con tipos incompatibles
+    let error1: boolean = a == texto1;        // ERROR: integer == string
+    let error2: boolean = a < true;           // ERROR: integer < boolean
+    let error3: boolean = texto1 >= a;        // ERROR: string >= integer
+}
+
+// 1.4 Verificacion de tipos en asignaciones
+function testErroresAsignaciones(): void {
+    let entero: integer;
+    let texto: string;
+    let booleano: boolean;
+    
+    // ERRORES: Asignaciones con tipos incompatibles
+    entero = "texto";              // ERROR: integer = string
+    texto = 123;                   // ERROR: string = integer
+    booleano = 3.14;               // ERROR: boolean = float
+}
+
+// 1.5 Inicializacion obligatoria de constantes (const)
+function testErroresConstantes(): void {
+    // ERROR: Constante no inicializada
+    // const ERROR_CONST: integer;  // ERROR: constante sin inicializar
+}
+
+// 1.6 Verificacion de tipos en listas
+function testErroresListas(): void {
+    // ERRORES: Tipos incompatibles en listas
+    let error1: integer[] = [1, "dos", 3];      // ERROR: mezcla de tipos
+    let error2: string[] = ["a", 2, "c"];       // ERROR: mezcla de tipos
+}
+
+// ========================================
+// 2. ERRORES DE MANEJO DE AMBITO
+// ========================================
+
+// 2.2 Error por uso de variables no declaradas
+function testErroresVariablesNoDeclaradas(): void {
+    let x: integer = 10;
+    
+    // ERRORES: Variables no declaradas
+    let error1: integer = x + y;        // ERROR: 'y' no declarada
+    let error2: integer = variableNoExiste;  // ERROR: 'variableNoExiste' no declarada
+    variableNoDeclarada = 42;           // ERROR: 'variableNoDeclarada' no declarada
+}
+
+// 2.4 Control de acceso correcto a variables en bloques anidados
+function testErroresBloquesAnidados(): void {
+    let nivel1: integer = 1;
+    
+    if (nivel1 > 0) {
+        let nivel2: integer = 2;
+        
+        if (nivel2 > 0) {
+            let nivel3: integer = 3;
+        }
+        
+        // ERROR: Variable de nivel inferior no accesible
+        let error: integer = nivel3;  // ERROR: nivel3 no esta en ambito
+    }
+}
+
+// ========================================
+// 3. ERRORES DE FUNCIONES Y PROCEDIMIENTOS
+// ========================================
+
+// 3.1 Validacion del numero y tipo de argumentos en llamadas a funciones
+function testErroresLlamadasFunciones(): void {
+    // ERRORES: Llamadas con argumentos incorrectos
+    let error1: integer = funcionConParametros("texto", 10, false);  // ERROR: tipos incorrectos
+    let error2: integer = funcionConParametros(10, "texto");         // ERROR: faltan argumentos
+    let error3: integer = funcionConParametros(10, "texto", true, 5);  // ERROR: argumentos extra
+}
+
+// 3.2 Validacion del tipo de retorno de la funcion
+function testErroresRetornos(): integer {
+    // ERROR: Funcion debe retornar integer pero retorna string
+    return "texto";  // ERROR: tipo de retorno incorrecto
+}
+
+// 3.4 Deteccion de declaraciones duplicadas
+// ERROR: Funcion duplicada
+function funcionDuplicada(): void {
+    print("primera declaracion");
+}
+function funcionDuplicada(): void {  // ERROR: funcion ya declarada
+    print("segunda declaracion");
+}
+
+// ========================================
+// 4. ERRORES DE CONTROL DE FLUJO
+// ========================================
+
+// 4.1 Las condiciones en if, while, do-while, for, switch deben evaluar expresiones de tipo boolean
+function testErroresCondiciones(): void {
+    let numero: integer = 42;
+    let texto: string = "hola";
+    
+    // ERRORES: Condiciones no booleanas
+    if (numero) {  // ERROR: numero es integer, no boolean
+        print("esto no deberia compilar");
+    }
+    
+    while (texto) {  // ERROR: texto es string, no boolean
+        print("bucle infinito");
+    }
+}
+
+// 4.2 Validacion de que se puede usar break y continue solo dentro de bucles
+function testErroresBreakContinue(): void {
+    let i: integer = 0;
+    
+    // ERRORES: break y continue fuera de bucles
+    if (i > 0) {
+        break;  // ERROR: break no esta dentro de un bucle
+    }
+    
+    if (i < 10) {
+        continue;  // ERROR: continue no esta dentro de un bucle
+    }
+}
+
+// 4.3 Validacion de que el return este dentro de una funcion
+// ERROR: return fuera de funcion
+// return 42;  // ERROR: return no esta dentro de una funcion
+
+// ========================================
+// 5. ERRORES DE CLASES Y OBJETOS
+// ========================================
+
+// 5.1 Validacion de existencia de atributos y metodos accedidos mediante . (dot notation)
+function testErroresAccesoClases(): void {
+    let persona: Persona = new Persona("Juan", 25);
+    
+    // ERRORES: Acceso a atributos y metodos inexistentes
+    let altura: integer = persona.altura;  // ERROR: atributo 'altura' no existe
+    persona.caminar();  // ERROR: metodo 'caminar' no existe
+}
+
+// 5.3 Manejo de this para referenciar el objeto actual
+function testErroresThis(): void {
+    // ERROR: this fuera de clase
+    let valor: integer = this.atributo;  // ERROR: this solo puede usarse dentro de clase
+}
+
+// ========================================
+// 6. ERRORES DE LISTAS Y ESTRUCTURAS DE DATOS
+// ========================================
+
+// 6.2 Validacion de indices (acceso valido a listas)
+function testErroresIndices(): void {
+    let lista: integer[] = [10, 20, 30];
+    
+    // ERRORES: Indices invalidos
+    let error1: integer = lista[5];   // ERROR: indice fuera de rango
+    let error2: integer = lista[-1];  // ERROR: indice negativo
+}
+
+// ========================================
+// 7. ERRORES GENERALES
+// ========================================
+
+// 7.1 Deteccion de codigo muerto
+function testErroresCodigoMuerto(): integer {
+    let valor: integer = 42;
+    
+    if (valor > 0) {
+        return valor;  // return valido
+        // ERROR: Codigo despues de return (no deberia ejecutarse)
+        print("esto nunca se ejecuta");  // WARNING: codigo muerto
+        valor = valor + 1;              // WARNING: codigo muerto
+    }
+    
+    return 0;
+}
+
+// 7.2 Verificacion de que las expresiones tienen sentido semantico
+function testErroresExpresiones(): void {
+    let numero: integer = 42;
+    let texto: string = "hola";
+    
+    // ERRORES: Expresiones semanticamente incorrectas
+    let error1: integer = numero * texto;  // ERROR: integer * string
+    let error2: boolean = numero && texto; // ERROR: integer && string
+    let error3: integer = numero / false;  // ERROR: integer / boolean
+}
+
+// 7.3 Validacion de declaraciones duplicadas
+function testErroresDeclaraciones(): void {
+    let variable: integer = 10;
+    
+    // ERROR: Variable duplicada
+    // let variable: string = "texto";  // ERROR: 'variable' ya declarada
+    
+    // ERROR: Parametro duplicado
+    // function funcionDuplicada(a: integer, a: string): void {  // ERROR: parametro 'a' duplicado
+    //     print("error");
+    // }
+}
+
+// ========================================
+// FUNCIONES AUXILIARES NECESARIAS
+// ========================================
+
+function funcionConParametros(a: integer, b: string, c: boolean): integer {
+    return a;
+}
+
+class Persona {
+    let nombre: string;
+    let edad: integer;
+    
+    function constructor(nombre: string, edad: integer): void {
+        this.nombre = nombre;
+        this.edad = edad;
+    }
+}
+
+// ========================================
+// FUNCION PRINCIPAL
+// ========================================
+
+function main(): void {
+    print("=== TEST DE REQUISITOS SEMANTICOS - SOLO ERRORES ===");
+    
+    // Ejecutar todos los tests con errores
+    testErroresAritmeticos();
+    testErroresLogicos();
+    testErroresComparaciones();
+    testErroresAsignaciones();
+    testErroresConstantes();
+    testErroresListas();
+    testErroresVariablesNoDeclaradas();
+    testErroresBloquesAnidados();
+    testErroresLlamadasFunciones();
+    testErroresRetornos();
+    testErroresCondiciones();
+    testErroresBreakContinue();
+    testErroresAccesoClases();
+    testErroresThis();
+    testErroresIndices();
+    testErroresCodigoMuerto();
+    testErroresExpresiones();
+    testErroresDeclaraciones();
+    
+    print("=== Si ves este mensaje, el compilador NO detecto los errores ===");
+}

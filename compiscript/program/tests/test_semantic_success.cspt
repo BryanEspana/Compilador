@@ -1,0 +1,358 @@
+// Test de Requisitos Semanticos - SOLO CODIGO VALIDO
+// Este archivo DEBE compilar exitosamente
+
+// ========================================
+// 1. SISTEMA DE TIPOS VALIDO
+// ========================================
+
+// 1.1 Verificacion de tipos en operaciones aritmeticas (+, -, *, /)
+function testOperacionesAritmeticas(): void {
+    let a: integer = 10;
+    let b: integer = 5;
+    
+    // Operaciones validas con integer
+    let suma: integer = a + b;        // integer + integer = integer
+    let resta: integer = a - b;       // integer - integer = integer
+    let multiplicacion: integer = a * b;  // integer * integer = integer
+    let division: integer = a / b;    // integer / integer = integer
+}
+
+// 1.2 Verificacion de tipos en operaciones logicas (&&, ||, !)
+function testOperacionesLogicas(): void {
+    let flag1: boolean = true;
+    let flag2: boolean = false;
+    
+    // Operaciones logicas validas
+    let and: boolean = flag1 && flag2;    // boolean && boolean = boolean
+    let or: boolean = flag1 || flag2;     // boolean || boolean = boolean
+    let not: boolean = !flag1;            // !boolean = boolean
+}
+
+// 1.3 Compatibilidad de tipos en comparaciones (==, !=, <, <=, >, >=)
+function testComparaciones(): void {
+    let a: integer = 10;
+    let b: integer = 20;
+    let texto1: string = "abc";
+    let texto2: string = "def";
+    
+    // Comparaciones validas
+    let igual: boolean = a == b;        // integer == integer = boolean
+    let diferente: boolean = a != b;    // integer != integer = boolean
+    let menor: boolean = a < b;         // integer < integer = boolean
+    let mayor: boolean = b > a;         // integer > integer = boolean
+    let menorIgual: boolean = a <= b;   // integer <= integer = boolean
+    let mayorIgual: boolean = b >= a;   // integer >= integer = boolean
+    
+    let igualString: boolean = texto1 == texto2;  // string == string = boolean
+}
+
+// 1.4 Verificacion de tipos en asignaciones
+function testAsignaciones(): void {
+    let entero: integer;
+    let texto: string;
+    let booleano: boolean;
+    
+    // Asignaciones validas
+    entero = 42;                    // integer = integer
+    texto = "hola mundo";          // string = string
+    booleano = true;               // boolean = boolean
+}
+
+// 1.5 Inicializacion obligatoria de constantes (const)
+function testConstantes(): void {
+    // Constantes inicializadas correctamente
+    const PI: integer = 3;
+    const MAX_SIZE: integer = 100;
+    const APP_NAME: string = "Compiscript";
+    const DEBUG_MODE: boolean = true;
+}
+
+// 1.6 Verificacion de tipos en listas
+function testListas(): void {
+    // Listas con tipos correctos
+    let numeros: integer[] = [1, 2, 3, 4, 5];
+    let textos: string[] = ["a", "b", "c"];
+}
+
+// ========================================
+// 2. MANEJO DE AMBITO VALIDO
+// ========================================
+
+// 2.1 Resolucion de nombres segun ambito local o global
+let variableGlobal: integer = 100;  // Variable global
+
+function testResolucionNombres(): void {
+    let variableLocal: integer = 50;  // Variable local
+    
+    // Acceso a variables locales y globales
+    let suma: integer = variableLocal + variableGlobal;
+    
+    if (variableLocal > 0) {
+        let variableBloque: integer = 25;  // Variable de bloque
+        
+        // Acceso a variables de bloque anidado
+        let resultado: integer = variableLocal + variableBloque + variableGlobal;
+    }
+}
+
+// 2.3 Prohibir redeclaracion de identificadores en el mismo ambito
+function testRedeclaracion(): void {
+    let variable: integer = 10;
+    
+    if (variable > 0) {
+        let variable: string = "texto";  // Valido: ambito diferente
+    }
+}
+
+// 2.4 Control de acceso correcto a variables en bloques anidados
+function testBloquesAnidados(): void {
+    let nivel1: integer = 1;
+    
+    if (nivel1 > 0) {
+        let nivel2: integer = 2;
+        
+        if (nivel2 > 0) {
+            let nivel3: integer = 3;
+            
+            // Acceso a variables de niveles superiores
+            let suma: integer = nivel1 + nivel2 + nivel3;
+        }
+        
+        // Acceso a variables de nivel superior
+        let suma2: integer = nivel1 + nivel2;
+    }
+}
+
+// 2.5 Creacion de nuevos entornos de simbolo para cada funcion, clase y bloque
+function testEntornosSimbolo(): void {
+    let variableFuncion: integer = 10;  // Entorno de funcion
+    
+    if (variableFuncion > 0) {
+        let variableBloque: integer = 20;  // Entorno de bloque
+        
+        // Cada ambito tiene su propio entorno
+        let resultado: integer = variableFuncion + variableBloque;
+    }
+}
+
+// ========================================
+// 3. FUNCIONES Y PROCEDIMIENTOS VALIDOS
+// ========================================
+
+// 3.1 Validacion del numero y tipo de argumentos en llamadas a funciones
+function funcionConParametros(a: integer, b: string, c: boolean): integer {
+    return a;
+}
+
+function testLlamadasFunciones(): void {
+    // Llamadas validas
+    let resultado1: integer = funcionConParametros(10, "texto", true);
+}
+
+// 3.2 Validacion del tipo de retorno de la funcion
+function funcionRetornaInteger(): integer {
+    return 42;  // Valido: retorna integer
+}
+
+function funcionRetornaString(): string {
+    return "hola";  // Valido: retorna string
+}
+
+function funcionRetornaBoolean(): boolean {
+    return true;  // Valido: retorna boolean
+}
+
+function funcionRetornaVoid(): void {
+    print("no retorna nada");  // Valido: no retorna valor
+}
+
+// 3.3 Soporte para funciones recursivas
+function factorial(n: integer): integer {
+    if (n <= 1) {
+        return 1;
+    } else {
+        return n * factorial(n - 1);  // Llamada recursiva valida
+    }
+}
+
+// ========================================
+// 4. CONTROL DE FLUJO VALIDO
+// ========================================
+
+// 4.1 Las condiciones en if, while, do-while, for, switch deben evaluar expresiones de tipo boolean
+function testCondicionesControlFlujo(): void {
+    let numero: integer = 42;
+    let flag: boolean = true;
+    
+    // Condiciones booleanas validas
+    if (flag) {
+        print("flag es verdadero");
+    }
+    
+    if (numero > 0) {
+        print("numero es positivo");
+    }
+    
+    while (flag) {
+        print("bucle while");
+        flag = false;
+    }
+    
+    for (let i: integer = 0; i < 5; i = i + 1) {
+        print("iteracion");
+    }
+}
+
+// 4.2 Validacion de que se puede usar break y continue solo dentro de bucles
+function testBreakContinue(): void {
+    let i: integer = 0;
+    
+    // break y continue dentro de bucles
+    while (i < 10) {
+        if (i == 5) {
+            break;  // Valido dentro de while
+        }
+        if (i == 2) {
+            continue;  // Valido dentro de while
+        }
+        i = i + 1;
+    }
+}
+
+// 4.3 Validacion de que el return este dentro de una funcion
+function testReturn(): integer {
+    let valor: integer = 100;
+    
+    if (valor > 50) {
+        return valor;  // return dentro de funcion
+    }
+    
+    return 0;  // return dentro de funcion
+}
+
+// ========================================
+// 5. CLASES Y OBJETOS VALIDOS
+// ========================================
+
+// 5.1 Validacion de existencia de atributos y metodos accedidos mediante . (dot notation)
+class Persona {
+    let nombre: string;
+    let edad: integer;
+    
+    function constructor(nombre: string, edad: integer): void {
+        this.nombre = nombre;
+        this.edad = edad;
+    }
+    
+    function saludar(): string {
+        return "Hola, soy " + this.nombre;
+    }
+}
+
+// 5.2 Verificacion de que el constructor se llama correctamente
+class Estudiante : Persona {
+    let grado: integer;
+    
+    function constructor(nombre: string, edad: integer, grado: integer): void {
+        // Llamada correcta al constructor padre
+        this.nombre = nombre;
+        this.edad = edad;
+        this.grado = grado;
+    }
+}
+
+// 5.3 Manejo de this para referenciar el objeto actual
+class Calculadora {
+    let resultado: integer;
+    
+    function constructor(): void {
+        this.resultado = 0;  // this dentro de clase
+    }
+    
+    function sumar(valor: integer): void {
+        this.resultado = this.resultado + valor;  // this dentro de clase
+    }
+}
+
+function testClasesValidas(): void {
+    let persona: Persona = new Persona("Juan", 25);
+    let estudiante: Estudiante = new Estudiante("Maria", 20, 3);
+    let calculadora: Calculadora = new Calculadora();
+    
+    // Acceso valido a atributos y metodos
+    let nombre: string = "Juan";
+    let edad: integer = 25;
+    let saludo: string = persona.saludar();
+    
+    let grado: integer = estudiante.grado;
+    
+    calculadora.sumar(10);
+    let resultado: integer = calculadora.resultado;
+}
+
+// ========================================
+// 6. LISTAS Y ESTRUCTURAS DE DATOS VALIDAS
+// ========================================
+
+// 6.1 Verificacion del tipo de elementos en listas
+function testTiposListas(): void {
+    // Listas con tipos correctos
+    let numeros: integer[] = [1, 2, 3, 4, 5];
+    let textos: string[] = ["a", "b", "c"];
+}
+
+// 6.2 Validacion de indices (acceso valido a listas)
+function testIndicesListas(): void {
+    let lista: integer[] = [10, 20, 30];
+    
+    // Acceso valido a indices
+    let primer: integer = lista[0];   // Indice valido
+    let segundo: integer = lista[1];  // Indice valido
+}
+
+// ========================================
+// 7. CASOS GENERALES VALIDOS
+// ========================================
+
+// 7.2 Verificacion de que las expresiones tienen sentido semantico
+function testExpresionesSemanticas(): void {
+    let numero: integer = 42;
+    let texto: string = "hola";
+    
+    // Expresiones validas
+    let suma: integer = numero + 10;
+}
+
+// ========================================
+// FUNCION PRINCIPAL
+// ========================================
+
+function main(): void {
+    print("=== TEST DE REQUISITOS SEMANTICOS - SOLO VALIDO ===");
+    
+    // Ejecutar todos los tests validos
+    testOperacionesAritmeticas();
+    testOperacionesLogicas();
+    testComparaciones();
+    testAsignaciones();
+    testConstantes();
+    testListas();
+    testResolucionNombres();
+    testRedeclaracion();
+    testBloquesAnidados();
+    testEntornosSimbolo();
+    testLlamadasFunciones();
+    testCondicionesControlFlujo();
+    testBreakContinue();
+    testReturn();
+    testClasesValidas();
+    testTiposListas();
+    testIndicesListas();
+    testExpresionesSemanticas();
+    
+    // Test de recursion
+    let fact: integer = factorial(5);
+    print("Factorial de 5: " + fact);
+    
+    print("=== TEST COMPLETADO EXITOSAMENTE ===");
+}
