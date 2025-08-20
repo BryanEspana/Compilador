@@ -164,15 +164,14 @@ class SemanticAnalyzer(CompiscriptListener):
             if ctx.typeAnnotation():
                 type_text = ctx.typeAnnotation().type_().getText()
                 if type_text.endswith('[]'):
-                    # Array type
                     base_type_text = type_text.replace('[]', '')
                     base_type = self.get_type_from_string(base_type_text)
                     if base_type == SymbolType.NULL:
                         self.add_error(ctx, f"Unknown array element type '{base_type_text}'")
                         return
                     dimensions = type_text.count('[]')
-                    symbol = Symbol(var_name, SymbolType.ARRAY, 
-                                  array_type=base_type, array_dimensions=dimensions)
+                    symbol = Symbol(var_name, SymbolType.ARRAY,
+                                    array_type=base_type, array_dimensions=dimensions)
                 else:
                     var_type = self.get_type_from_string(type_text)
                     if var_type == SymbolType.NULL:
@@ -180,25 +179,54 @@ class SemanticAnalyzer(CompiscriptListener):
                         return
                     symbol = Symbol(var_name, var_type)
             else:
-                symbol = Symbol(var_name, SymbolType.NULL)  # Type will be inferred from initializer
-            
-            # Check initializer
+                symbol = Symbol(var_name, SymbolType.NULL)  # se infiere del inicializador
+
+            # 3) Inicializador (si existe)
             if ctx.initializer():
                 symbol.is_initialized = True
-                # Validate initializer type compatibility
-                expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.initializer().expression())
-                
-                # If variable has explicit type annotation, check compatibility
-                if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
-                    if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
-                        self.add_error(ctx, f"Cannot initialize variable '{var_name}' of type {symbol.type.value} with value of type {expr_type.value}")
-                # If no explicit type, infer from initializer
-                elif symbol.type == SymbolType.NULL and expr_type != SymbolType.NULL:
-                    symbol.type = expr_type
-            
+
+                # IMPORTANTE: usar evaluate_expression (no solo ...type_only) para que
+                # ExpressionEvaluator fije last_array_base / last_array_dims si es un array literal.
+                rhs_expr = ctx.initializer().expression()
+                rhs_type = self.expression_evaluator.evaluate_expression(rhs_expr)
+
+                if ctx.typeAnnotation():
+                    # 3a) LHS con anotación de ARRAY: comparar base y dimensiones
+                    if symbol.type == SymbolType.ARRAY:
+                        if rhs_type != SymbolType.ARRAY:
+                            self.add_error(
+                                ctx,
+                                f"No se puede asignar {rhs_type.value} a {symbol.array_type.value}{'[]'*symbol.array_dimensions}"
+                            )
+                        else:
+                            rhs_base = getattr(self.expression_evaluator, "last_array_base", None)
+                            rhs_dims = getattr(self.expression_evaluator, "last_array_dims", 0)
+                            if rhs_base != symbol.array_type or rhs_dims != symbol.array_dimensions:
+                                lhs_txt = f"{symbol.array_type.value}{'[]'*symbol.array_dimensions}"
+                                rhs_txt = f"{rhs_base.value if rhs_base else 'null'}{'[]'*(rhs_dims or 0)}"
+                                self.add_error(ctx, f"Array type mismatch: se esperaba {lhs_txt} y se obtuvo {rhs_txt}")
+                    else:
+                        # 3b) LHS no es array: compatibilidad normal
+                        if rhs_type != SymbolType.NULL and not self.expression_evaluator.are_types_compatible(symbol.type, rhs_type, "assignment"):
+                            self.add_error(
+                                ctx,
+                                f"Cannot initialize variable '{var_name}' of type {symbol.type.value} with value of type {rhs_type.value}"
+                            )
+                else:
+                    # 3c) Sin anotación: inferir
+                    if rhs_type == SymbolType.ARRAY:
+                        symbol.type = SymbolType.ARRAY
+                        symbol.array_type = getattr(self.expression_evaluator, "last_array_base", None)
+                        symbol.array_dimensions = getattr(self.expression_evaluator, "last_array_dims", 0)
+                    elif rhs_type != SymbolType.NULL:
+                        symbol.type = rhs_type
+
+            # 4) Definir símbolo
             self.symbol_table.define(symbol, ctx.start.line, ctx.start.column)
+
         except Exception as e:
             self.add_error(ctx, f"Error processing variable declaration: {str(e)}")
+
     
     def enterConstantDeclaration(self, ctx: CompiscriptParser.ConstantDeclarationContext):
         """Handle constant declarations (const)"""
