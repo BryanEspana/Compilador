@@ -1,0 +1,95 @@
+// Test para validar reglas de Control de Flujo
+// iv. Control de Flujo (Flow Control)
+
+// 1. Las condiciones en if, while, do-while, for, switch deben evaluar expresiones de tipo boolean
+function testBooleanConditions(): void {
+    let x: integer = 5;
+    let y: integer = 10;
+    let flag: boolean = true;
+    
+    // ✅ Condiciones booleanas válidas
+    if (x < y) {
+        print("x es menor que y");
+    }
+    
+    if (flag) {
+        print("flag es verdadero");
+    }
+    
+    while (x > 0) {
+        x = x - 1;
+    }
+    
+    for (let i: integer = 0; i < 5; i = i + 1) {
+        print("iteracion: " + i);
+    }
+    
+    // ✅ Condiciones compuestas válidas
+    if ((x == 0) && (y > 0)) {
+        print("x es 0 y y es positivo");
+    }
+    
+    if ((flag == false) || (x != y)) {
+        print("condicion compuesta valida");
+    }
+}
+
+// 2. Validación de que se puede usar break y continue sólo dentro de bucles
+function testBreakContinue(): void {
+    let i: integer = 0;
+    
+    // ✅ break y continue dentro de while
+    while (i < 10) {
+        if (i == 5) {
+            break;  // ✅ Válido dentro de while
+        }
+        if (i == 2) {
+            continue;  // ✅ Válido dentro de while
+        }
+        i = i + 1;
+    }
+    
+    // ✅ break y continue dentro de for
+    for (let j: integer = 0; j < 10; j = j + 1) {
+        if (j == 7) {
+            break;  // ✅ Válido dentro de for
+        }
+        if (j == 3) {
+            continue;  // ✅ Válido dentro de for
+        }
+        print("j: " + j);
+    }
+}
+
+// 3. Validación de que el return esté dentro de una función
+function testReturnStatements(): integer {
+    let valor: integer = 42;
+    
+    // ✅ return dentro de función
+    if (valor > 40) {
+        return valor;  // ✅ Válido dentro de función
+    }
+    
+    return 0;  // ✅ Válido dentro de función
+}
+
+function testVoidReturn(): void {
+    let x: integer = 10;
+    
+    if (x > 5) {
+        return;  // ✅ return void válido
+    }
+    
+    print("x no es mayor que 5");
+}
+
+// Función principal para ejecutar todos los tests
+function main(): void {
+    testBooleanConditions();
+    testBreakContinue();
+    
+    let resultado: integer = testReturnStatements();
+    print("Resultado: " + resultado);
+    
+    testVoidReturn();
+}

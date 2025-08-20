@@ -1,0 +1,132 @@
+// Test para validar reglas de Clases y Objetos
+// v. Clases y Objetos (Classes and Objects)
+
+// Clase base para testing
+class Animal {
+    let nombre: string;
+    let edad: integer;
+    
+    function constructor(nombre: string, edad: integer): void {
+        this.nombre = nombre;
+        this.edad = edad;
+    }
+    
+    function hacerSonido(): string {
+        return "Sonido de animal";
+    }
+    
+    function obtenerInfo(): string {
+        return "Nombre: " + this.nombre + ", Edad: " + this.edad;
+    }
+}
+
+// Clase derivada para testing de herencia
+class Perro : Animal {
+    let raza: string;
+    
+    function constructor(nombre: string, edad: integer, raza: string): void {
+        // ✅ Llamada correcta al constructor padre
+        this.nombre = nombre;
+        this.edad = edad;
+        this.raza = raza;
+    }
+    
+    function hacerSonido(): string {
+        return "Guau guau!";
+    }
+    
+    function obtenerRaza(): string {
+        return this.raza;  // ✅ Acceso a atributo propio
+    }
+    
+    function obtenerInfoCompleta(): string {
+        // ✅ Acceso a método heredado
+        let infoBase: string = this.obtenerInfo();
+        return infoBase + ", Raza: " + this.raza;
+    }
+}
+
+// Clase para testing de métodos y atributos
+class Calculadora {
+    let resultado: integer;
+    
+    function constructor(): void {
+        this.resultado = 0;
+    }
+    
+    function sumar(valor: integer): void {
+        this.resultado = this.resultado + valor;
+    }
+    
+    function restar(valor: integer): void {
+        this.resultado = this.resultado - valor;
+    }
+    
+    function obtenerResultado(): integer {
+        return this.resultado;
+    }
+    
+    function limpiar(): void {
+        this.resultado = 0;
+    }
+}
+
+// Función para testing de acceso a atributos y métodos
+function testDotNotation(): void {
+    // ✅ Creación de objetos con constructores
+    let miPerro: Perro = new Perro("Buddy", 3, "Golden Retriever");
+    let miCalculadora: Calculadora = new Calculadora();
+    
+    // ✅ Acceso a atributos mediante dot notation
+    let nombrePerro: string = miPerro.nombre;
+    let edadPerro: integer = miPerro.edad;
+    let razaPerro: string = miPerro.raza;
+    
+    print("Perro: " + nombrePerro + ", " + edadPerro + " anos, " + razaPerro);
+    
+    // ✅ Acceso a métodos mediante dot notation
+    let sonido: string = miPerro.hacerSonido();
+    let info: string = miPerro.obtenerInfoCompleta();
+    
+    print("Sonido: " + sonido);
+    print("Info: " + info);
+    
+    // ✅ Uso de métodos de la calculadora
+    miCalculadora.sumar(10);
+    miCalculadora.sumar(5);
+    miCalculadora.restar(3);
+    
+    let resultado: integer = miCalculadora.obtenerResultado();
+    print("Resultado calculadora: " + resultado);
+    
+    // ✅ Limpieza y nuevo cálculo
+    miCalculadora.limpiar();
+    miCalculadora.sumar(100);
+    resultado = miCalculadora.obtenerResultado();
+    print("Nuevo resultado: " + resultado);
+}
+
+// Función para testing de this en diferentes contextos
+function testThisKeyword(): void {
+    let animal: Animal = new Animal("Tigre", 5);
+    
+    // ✅ this dentro de métodos de clase
+    let info: string = animal.obtenerInfo();
+    print("Info del animal: " + info);
+    
+    // ✅ this para acceder a atributos de la instancia
+    let nombre: string = animal.nombre;
+    let edad: integer = animal.edad;
+    
+    print("Nombre: " + nombre + ", Edad: " + edad);
+}
+
+// Función principal para ejecutar todos los tests
+function main(): void {
+    print("=== Testing Clases y Objetos ===");
+    
+    testDotNotation();
+    testThisKeyword();
+    
+    print("=== Tests completados ===");
+}

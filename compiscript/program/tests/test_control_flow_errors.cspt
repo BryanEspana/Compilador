@@ -1,0 +1,122 @@
+// Test para validar deteccion de ERRORES en Control de Flujo
+// Este archivo DEBE generar errores semanticos especificos de control de flujo
+
+// ERROR 1: break fuera de bucle
+function testBreakFueraDeBucle(): void {
+    let x: integer = 5;
+    
+    if (x > 0) {
+        break;  // ERROR: break no esta dentro de un bucle
+    }
+}
+
+// ERROR 2: continue fuera de bucle
+function testContinueFueraDeBucle(): void {
+    let y: integer = 10;
+    
+    if (y < 20) {
+        continue;  // ERROR: continue no esta dentro de un bucle
+    }
+}
+
+// ERROR 3: Condicion no booleana en if
+function testCondicionNoBooleanaIf(): void {
+    let numero: integer = 42;
+    let texto: string = "hola";
+    
+    if (numero) {  // ERROR: condicion debe ser booleana, no integer
+        print("numero es verdadero");
+    }
+    
+    if (texto) {  // ERROR: condicion debe ser booleana, no string
+        print("texto es verdadero");
+    }
+}
+
+// ERROR 4: Condicion no booleana en while
+function testCondicionNoBooleanaWhile(): void {
+    let contador: integer = 5;
+    let flag: string = "activo";
+    
+    while (contador) {  // ERROR: condicion debe ser booleana, no integer
+        contador = contador - 1;
+    }
+    
+    while (flag) {  // ERROR: condicion debe ser booleana, no string
+        print("flag activo");
+    }
+}
+
+// ERROR 5: Condicion no booleana en for
+function testCondicionNoBooleanaFor(): void {
+    let valor: integer = 10;
+    
+    for (let i: integer = 0; i; i = i + 1) {  // ERROR: condicion debe ser booleana
+        print("iteracion valida");
+    }
+    
+    for (let j: integer = 0; valor; j = j + 1) {  // ERROR: condicion debe ser booleana
+        print("otra iteracion");
+    }
+}
+
+// ERROR 6: break en lugar incorrecto
+function testBreakLugarIncorrecto(): void {
+    let x: integer = 0;
+    
+    // ERROR: break fuera de cualquier bucle
+    if (x > 5) {
+        break;  // ERROR: break no esta en bucle
+    }
+}
+
+// ERROR 7: Condiciones compuestas invalidas
+function testCondicionesCompuestasInvalidas(): void {
+    let x: integer = 5;
+    let y: integer = 10;
+    let flag: boolean = true;
+    
+    // ERROR: Operador logico con tipos no booleanos
+    if (x && y) {  // ERROR: x e y son integer, no boolean
+        print("x y y son verdaderos");
+    }
+    
+    if (flag || x) {  // ERROR: x es integer, no boolean
+        print("flag o x es verdadero");
+    }
+    
+    if (!x) {  // ERROR: x es integer, no boolean
+        print("x no es verdadero");
+    }
+}
+
+// ERROR 8: Variables de control no declaradas
+function testVariableControlNoDeclarada(): void {
+    // ERROR: i no esta declarada
+    for (i = 0; i < 5; i = i + 1) {  // ERROR: i no declarada
+        print("iteracion");
+    }
+    
+    // ERROR: contador no esta declarada
+    while (contador > 0) {  // ERROR: contador no declarada
+        print("contando");
+        contador = contador - 1;
+    }
+}
+
+// Funcion principal que ejecuta todos los casos de error
+function main(): void {
+    print("=== Testing Errores de Control de Flujo ===");
+    
+    // Estos metodos DEBEN generar errores
+    testBreakFueraDeBucle();
+    testContinueFueraDeBucle();
+    testCondicionNoBooleanaIf();
+    testCondicionNoBooleanaWhile();
+    testCondicionNoBooleanaFor();
+    testBreakLugarIncorrecto();
+    testCondicionesCompuestasInvalidas();
+    testVariableControlNoDeclarada();
+    
+    print("=== Si ves este mensaje, el compilador NO detecto los errores ===");
+}

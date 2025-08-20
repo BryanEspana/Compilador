@@ -1,0 +1,126 @@
+// Test para validar deteccion de ERRORES en Clases y Objetos
+// Este archivo DEBE generar errores semanticos especificos de clases
+
+// ERROR 1: Acceso a atributo inexistente
+class PersonaError {
+    let nombre: string;
+    let edad: integer;
+    
+    function constructor(nombre: string, edad: integer): void {
+        this.nombre = nombre;
+        this.edad = edad;
+    }
+    
+    function obtenerInfo(): string {
+        // ERROR: 'altura' no esta declarado en la clase
+        let altura: integer = this.altura;
+        return "Info";
+    }
+}
+
+// ERROR 2: Llamada a metodo inexistente
+class EstudianteError {
+    let grado: integer;
+    
+    function constructor(grado: integer): void {
+        this.grado = grado;
+    }
+    
+    function estudiar(): void {
+        // ERROR: 'calcularPromedio' no existe en esta clase
+        this.calcularPromedio();
+    }
+}
+
+// ERROR 3: Acceso a atributos de objeto no inicializado
+function testObjetoNoInicializado(): void {
+    let persona: PersonaError;
+    
+    // ERROR: 'persona' no esta inicializado (no se uso 'new')
+    let nombre: string = persona.nombre;
+    print("Nombre obtenido");
+}
+
+// ERROR 4: Constructor mal llamado
+function testConstructorError(): void {
+    // ERROR: Constructor requiere 2 parametros, solo se pasa 1
+    let persona: PersonaError = new PersonaError("Juan");
+}
+
+// ERROR 5: Asignacion de tipo incorrecto a atributo de clase
+class CalculadoraError {
+    let resultado: integer;
+    
+    function constructor(): void {
+        this.resultado = 0;
+    }
+    
+    function asignarResultado(): void {
+        // ERROR: No se puede asignar string a integer
+        this.resultado = "texto";
+    }
+}
+
+// ERROR 6: Acceso a 'this' fuera de clase
+function testThisFueraDeClase(): void {
+    // ERROR: 'this' solo puede usarse dentro de metodos de clase
+    let valor: integer = this.atributo;
+}
+
+// ERROR 7: Herencia con clase inexistente
+class HijoError : ClaseInexistente {
+    let atributo: string;
+    
+    function constructor(): void {
+        this.atributo = "valor";
+    }
+}
+
+// ERROR 8: Metodo que no retorna valor cuando deberia
+class ClaseRetorno {
+    let valor: integer;
+    
+    function constructor(): void {
+        this.valor = 10;
+    }
+    
+    function obtenerValor(): integer {
+        // ERROR: Funcion deberia retornar integer pero no retorna nada
+        print("Obteniendo valor");
+    }
+}
+
+// ERROR 9: Variable de clase no declarada
+class ClaseVariableError {
+    // ERROR: Se intenta usar 'contador' sin declararla
+    function constructor(): void {
+        this.contador = 0;  // ERROR: 'contador' no esta declarado
+    }
+}
+
+// Funcion principal que ejecuta todos los casos de error
+function main(): void {
+    print("=== Testing Errores de Clases y Objetos ===");
+    
+    // Estos metodos DEBEN generar errores
+    testObjetoNoInicializado();
+    testConstructorError();
+    testThisFueraDeClase();
+    
+    // Crear objetos que tienen errores internos
+    let personaError: PersonaError = new PersonaError("Juan", 25);
+    personaError.obtenerInfo();
+    
+    let estudianteError: EstudianteError = new EstudianteError(10);
+    estudianteError.estudiar();
+    
+    let calcError: CalculadoraError = new CalculadoraError();
+    calcError.asignarResultado();
+    
+    let claseRetorno: ClaseRetorno = new ClaseRetorno();
+    let valor: integer = claseRetorno.obtenerValor();
+    
+    let claseVarError: ClaseVariableError = new ClaseVariableError();
+    
+    print("=== Si ves este mensaje, el compilador NO detecto los errores ===");
+}
