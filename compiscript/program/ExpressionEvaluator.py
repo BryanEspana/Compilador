@@ -660,6 +660,8 @@ class ExpressionEvaluator:
             # Look up the function in symbol table to get its return type
             func_symbol = self.symbol_table.lookup(func_name)
             if func_symbol and isinstance(func_symbol, FunctionSymbol):
+                # Validate parameter count for direct function calls
+                self._validate_parameter_count(ctx, func_symbol, func_name)
                 return func_symbol.return_type
             elif func_name == 'toString':
                 return SymbolType.STRING
@@ -719,8 +721,10 @@ class ExpressionEvaluator:
                     break
                 current_scope = current_scope.parent
         
-        # If found, return the actual return type
+        # If found, validate parameter count and return the actual return type
         if method_symbol and isinstance(method_symbol, FunctionSymbol):
+            # Validate parameter count
+            self._validate_parameter_count(ctx, method_symbol, method_name)
             return method_symbol.return_type
         
         # Fallback to hardcoded common method types if not found in symbol table
@@ -805,16 +809,25 @@ class ExpressionEvaluator:
                 break
             current_scope = current_scope.parent
         
-        # Check in global scope for class definitions and their properties
-        # This handles access like obj.property where obj is of a class type
-        # For now, make educated guesses based on common property names
+        # Try to find the property in ALL class scopes (for obj.property access)
+        property_found = False
+        for scope in self.symbol_table.scopes:
+            if scope.name.startswith('class_'):
+                property_symbol = scope.lookup(property_name)
+                if property_symbol:
+                    property_found = True
+                    return property_symbol.type
+        
+        # If we reach here, the property was not found in any class
+        # Check if it's a common hardcoded property (for backward compatibility)
         if property_name in ['nombre', 'apellido', 'carnet', 'color']:
             return SymbolType.STRING
-        elif property_name in ['edad', 'creditos']:
+        elif property_name in ['edad', 'creditos', 'grado']:
             return SymbolType.INTEGER
-            
-        # Default to string for most properties
-        return SymbolType.STRING
+        
+        # Property not found - this is an error
+        self.add_error(ctx, f"Property '{property_name}' does not exist")
+        return SymbolType.NULL
     
     def are_types_compatible(self, left: SymbolType, right: SymbolType, operation: str) -> bool:
         # No aceptes NULL como comodín
@@ -853,3 +866,23 @@ class ExpressionEvaluator:
     def has_errors(self) -> bool:
         """Check if there are type errors"""
         return len(self.errors) > 0
+    
+    def _validate_parameter_count(self, ctx, function_symbol: FunctionSymbol, function_name: str):
+        """Validate that the number of arguments matches the function signature"""
+        # Count the arguments passed in the call
+        argument_count = 0
+        if hasattr(ctx, 'arguments') and ctx.arguments():
+            # Count the expressions in the arguments
+            if hasattr(ctx.arguments(), 'expression') and ctx.arguments().expression():
+                argument_expressions = ctx.arguments().expression()
+                if isinstance(argument_expressions, list):
+                    argument_count = len(argument_expressions)
+                else:
+                    argument_count = 1  # Single argument
+        
+        # Get expected parameter count
+        expected_count = len(function_symbol.parameters)
+        
+        # Validate the counts match
+        if argument_count != expected_count:
+            self.add_error(ctx, f"Function '{function_name}' expects {expected_count} parameter(s), but {argument_count} were provided")
