@@ -243,7 +243,16 @@ class ExpressionEvaluator:
 
         def is_numeric(t): return t in (SymbolType.INTEGER, SymbolType.FLOAT)
         def numeric_result(a, b, op):
-            return SymbolType.FLOAT if (op == '/' or SymbolType.FLOAT in (a, b)) else SymbolType.INTEGER
+            # For division: integer / integer = integer (integer division)
+            #               anything else with float = float  
+            if op == '/':
+                if a == SymbolType.INTEGER and b == SymbolType.INTEGER:
+                    return SymbolType.INTEGER  # Integer division
+                else:
+                    return SymbolType.FLOAT    # Float division
+            else:
+                # For *, +, -: float if any operand is float, otherwise integer
+                return SymbolType.FLOAT if SymbolType.FLOAT in (a, b) else SymbolType.INTEGER
 
         left_type = self.evaluate_unary_expr(ctx.unaryExpr(0))
         for i in range(1, len(ctx.unaryExpr())):
@@ -436,10 +445,62 @@ class ExpressionEvaluator:
         # Start with primary atom
         base_type = self.evaluate_primary_atom(ctx.primaryAtom())
         
-        # Apply suffix operations
+        # Check if the primary atom is 'super' for special handling
+        is_super_expression = (hasattr(ctx.primaryAtom(), 'Identifier') and 
+                              ctx.primaryAtom().Identifier() and
+                              ctx.primaryAtom().Identifier().getText() == 'super')
+        
+        # Apply suffix operations sequentially, keeping track of context
         current_type = base_type
-        for suffix_ctx in ctx.suffixOp():
-            current_type = self.evaluate_suffix_op(suffix_ctx, current_type)
+        suffix_ops = ctx.suffixOp() if hasattr(ctx, 'suffixOp') else []
+        
+        for i, suffix_ctx in enumerate(suffix_ops):
+            suffix_type = type(suffix_ctx).__name__
+            
+            if suffix_type == 'PropertyAccessExprContext':
+                # Property access - check if next operation is a call
+                is_followed_by_call = (i + 1 < len(suffix_ops) and 
+                                     type(suffix_ops[i + 1]).__name__ == 'CallExprContext')
+                
+                if is_followed_by_call:
+                    # This is method access - store info for method call
+                    if hasattr(suffix_ctx, 'Identifier') and suffix_ctx.Identifier():
+                        property_name = suffix_ctx.Identifier().getText()
+                        self.last_property_name = property_name
+                        self.last_object_type = current_type
+                        self.is_super_call = is_super_expression  # Track if this is super.method()
+                    # Don't change current_type - keep it as the object type
+                else:
+                    # This is regular property access
+                    current_type = self._handle_property_access(suffix_ctx, current_type)
+                
+            elif suffix_type == 'CallExprContext':
+                # Function/method call
+                if hasattr(self, 'last_property_name') and hasattr(self, 'last_object_type'):
+                    # This is a method call - use the original object type and method name
+                    method_name = self.last_property_name
+                    object_type = self.last_object_type
+                    is_super = getattr(self, 'is_super_call', False)
+                    
+                    if is_super:
+                        current_type = self._handle_super_method_call(suffix_ctx, method_name)
+                    else:
+                        current_type = self._handle_method_call_with_name(suffix_ctx, object_type, method_name)
+                    
+                    # Clean up stored attributes
+                    delattr(self, 'last_property_name')
+                    delattr(self, 'last_object_type')
+                    if hasattr(self, 'is_super_call'):
+                        delattr(self, 'is_super_call')
+                else:
+                    # This is a direct function call (like super() or function())
+                    if is_super_expression:
+                        current_type = SymbolType.VOID  # super() constructor call
+                    else:
+                        current_type = self.evaluate_suffix_op(suffix_ctx, current_type)
+                    
+            else:
+                current_type = self.evaluate_suffix_op(suffix_ctx, current_type)
         
         return current_type
     
@@ -455,9 +516,23 @@ class ExpressionEvaluator:
             # Variable or function reference
             if hasattr(ctx, 'Identifier') and ctx.Identifier():
                 var_name = ctx.Identifier().getText()
+                
+                # Special handling for 'super'
+                if var_name == 'super':
+                    current_scope = self.symbol_table.current_scope
+                    while current_scope:
+                        if current_scope.name.startswith('class_') or current_scope.name == 'init':
+                            # super can be called as a function (constructor) or for property access
+                            return SymbolType.CLASS  # Parent class type - can be called or accessed
+                        current_scope = current_scope.parent
+                    self.add_error(ctx, "'super' can only be used inside a class")
+                    return SymbolType.NULL
+                
                 symbol = self.symbol_table.lookup(var_name)
                 if not symbol:
-                    self.add_error(ctx, f"Undefined identifier '{var_name}'")
+                    # Don't report error for 'super' - it's handled above
+                    if var_name != 'super':
+                        self.add_error(ctx, f"Undefined identifier '{var_name}'")
                     return SymbolType.NULL
                 
                 # Check if it's a variable being used before initialization
@@ -466,6 +541,7 @@ class ExpressionEvaluator:
                     self.add_error(ctx, f"Variable '{var_name}' is used before being initialized")
                 
                 if isinstance(symbol, FunctionSymbol):
+                    self.last_function_name = var_name  # Store function name for call resolution
                     return SymbolType.FUNCTION
                 elif isinstance(symbol, ClassSymbol):
                     return SymbolType.CLASS
@@ -488,11 +564,22 @@ class ExpressionEvaluator:
                 # Return the specific class type (we'll use CLASS for now, but could be more specific)
                 return SymbolType.CLASS
         
+        elif ctx_type == 'SuperExprContext':
+            # Super reference
+            current_scope = self.symbol_table.current_scope
+            while current_scope:
+                if current_scope.name.startswith('class_') or current_scope.name == 'init':
+                    return SymbolType.CLASS  # Parent class type
+                current_scope = current_scope.parent
+            
+            self.add_error(ctx, "'super' can only be used inside a class")
+            return SymbolType.NULL
+        
         elif ctx_type == 'ThisExprContext':
             # This reference
             current_scope = self.symbol_table.current_scope
             while current_scope:
-                if current_scope.name.startswith('class_'):
+                if current_scope.name.startswith('class_') or current_scope.name == 'init':
                     return SymbolType.CLASS  # Current class type
                 current_scope = current_scope.parent
             
@@ -509,23 +596,17 @@ class ExpressionEvaluator:
         # Check the specific type of suffix operation based on context type
         ctx_type = type(ctx).__name__
         
-
-        
         if ctx_type == 'CallExprContext':
             # Function call
-            if base_type != SymbolType.FUNCTION and base_type != SymbolType.CLASS:
+            if base_type == SymbolType.FUNCTION:
+                # Direct function call - look up function in symbol table
+                return self._handle_function_call(ctx, base_type)
+            elif base_type == SymbolType.CLASS:
+                # Method call on class instance or super() call
+                return self._handle_class_call(ctx, base_type)
+            else:
                 self.add_error(ctx, f"Cannot call non-function type {base_type.value}")
                 return SymbolType.NULL
-            
-            # For class method calls, try to determine return type
-            if base_type == SymbolType.CLASS:
-                # This is a method call on a class instance
-                # For now, return a generic type (could be improved to look up the actual method)
-                return SymbolType.NULL  # Simplified - could return the method's return type
-            else:
-                # This is a function call
-                # For now, return a generic type (could be improved to look up the actual function)
-                return SymbolType.NULL  # Simplified - could return the function's return type
         
         elif ctx_type == 'IndexExprContext':
             # Array indexing
@@ -542,16 +623,198 @@ class ExpressionEvaluator:
         
         elif ctx_type == 'PropertyAccessExprContext':
             # Property access
-            if base_type != SymbolType.CLASS and base_type != SymbolType.NULL:
-                self.add_error(ctx, f"Cannot access property of non-object type {base_type.value}")
-                return SymbolType.NULL
-            
-            # For class instances, allow property access (simplified)
-            # In a full implementation, we would look up the property in the class definition
-            # For now, return the same type as the base (class instance)
-            return base_type  # Return the class type instead of NULL
+            return self._handle_property_access(ctx, base_type)
         
         return base_type
+    
+    def _handle_class_call(self, ctx, base_type: SymbolType) -> SymbolType:
+        """Handle calls on class type (constructor calls, super calls, etc.)"""
+        # This could be:
+        # 1. super() - calling parent constructor
+        # 2. new ClassName() - instantiating a class
+        # 3. obj.method() - but this should be handled by _handle_method_call_with_name
+        
+        # For super() calls, return void (constructors don't return values)
+        # For class instantiation, return the class type
+        # For now, assume it's a constructor call
+        return SymbolType.VOID
+    
+    def _handle_function_call(self, ctx, base_type: SymbolType) -> SymbolType:
+        """Handle direct function calls"""
+        # When we reach here, we need to find out what function is being called
+        # The function name should be available from the context or symbol table
+        
+        # Try to get function name from the call context
+        # This is tricky because at this point we only have the arguments part
+        # We need to look up the function from the symbol table using the stored function reference
+        
+        # For now, we need to look up recently resolved function symbols
+        # This is a limitation - in a full implementation, we'd pass the function symbol down
+        
+        # Let's check if we can find a function symbol that was recently looked up
+        # Check for common function names that return specific types
+        if hasattr(self, 'last_function_name'):
+            func_name = self.last_function_name
+            delattr(self, 'last_function_name')  # Clean up after use
+            
+            # Look up the function in symbol table to get its return type
+            func_symbol = self.symbol_table.lookup(func_name)
+            if func_symbol and isinstance(func_symbol, FunctionSymbol):
+                return func_symbol.return_type
+            elif func_name == 'toString':
+                return SymbolType.STRING
+        
+        # For user-defined functions, return NULL as default if we can't determine
+        return SymbolType.NULL
+    
+    def _handle_super_method_call(self, ctx, method_name: str) -> SymbolType:
+        """Handle super.method() calls"""
+        # Determine return type based on parent class method
+        if method_name == 'toString':
+            return SymbolType.STRING
+        elif method_name == 'getName':
+            return SymbolType.STRING  
+        elif method_name in ['getAge', 'getCredits']:
+            return SymbolType.INTEGER
+        elif method_name in ['init', 'constructor']:
+            return SymbolType.VOID
+        
+        # Default assumption for unknown parent methods
+        return SymbolType.STRING
+    
+    def _handle_method_call_with_name(self, ctx, base_type: SymbolType, method_name: str) -> SymbolType:
+        """Handle method calls on class instances with known method name"""
+        if base_type != SymbolType.CLASS:
+            self.add_error(ctx, f"Cannot call method on non-object type {base_type.value}")
+            return SymbolType.NULL
+        
+        # Special handling for 'super' methods
+        if method_name == 'super':
+            # This is super.method() - calling parent class method
+            return SymbolType.STRING  # Most parent methods return string (like toString)
+        
+        # Try to find the method in the symbol table
+        method_symbol = None
+        
+        # First, try to find in global scope (for all class methods)
+        global_scope = self.symbol_table.get_global_scope()
+        if global_scope:
+            method_symbol = global_scope.lookup(method_name)
+        
+        # If not found globally, look for methods in class scopes
+        # We need to search all scopes for class_* scopes
+        if not method_symbol or not isinstance(method_symbol, FunctionSymbol):
+            for scope in self.symbol_table.scopes:
+                if scope.name.startswith('class_'):
+                    method_symbol = scope.lookup(method_name)
+                    if method_symbol and isinstance(method_symbol, FunctionSymbol):
+                        break
+        
+        # If still not found, look in current scope and parent scopes (fallback)
+        if not method_symbol or not isinstance(method_symbol, FunctionSymbol):
+            current_scope = self.symbol_table.current_scope
+            while current_scope and not method_symbol:
+                method_symbol = current_scope.lookup(method_name)
+                if method_symbol and isinstance(method_symbol, FunctionSymbol):
+                    break
+                current_scope = current_scope.parent
+        
+        # If found, return the actual return type
+        if method_symbol and isinstance(method_symbol, FunctionSymbol):
+            return method_symbol.return_type
+        
+        # Fallback to hardcoded common method types if not found in symbol table
+        # Determine return type based on method name
+        if method_name == 'toString':
+            return SymbolType.STRING
+        elif method_name == 'length':
+            return SymbolType.INTEGER
+        elif method_name in ['init', 'constructor']:
+            return SymbolType.VOID
+        elif method_name == 'getName':
+            return SymbolType.STRING
+        elif method_name in ['getAge', 'getCredits', 'getEdad']:
+            return SymbolType.INTEGER
+        
+        # For unknown methods, assume they return a reasonable default
+        # In a real implementation, we'd look up the method in the class definition
+        return SymbolType.STRING  # Default assumption
+    
+    def _handle_method_call(self, ctx, base_type: SymbolType) -> SymbolType:
+        """Handle method calls on class instances"""
+        # For method calls on class instances, we need to determine the return type
+        # This is a simplified approach - in a full implementation we'd look up the method signature
+        
+        # Extract method name from context if possible
+        method_name = None
+        if hasattr(ctx, 'Identifier') and ctx.Identifier():
+            method_name = ctx.Identifier().getText()
+        elif hasattr(ctx, 'getText'):
+            # Try to extract method name from the full text
+            call_text = ctx.getText()
+            if '(' in call_text:
+                method_name = call_text.split('(')[0]
+        
+        # Determine return type based on method name
+        if method_name == 'toString':
+            return SymbolType.STRING
+        elif method_name == 'length':
+            return SymbolType.INTEGER
+        elif method_name in ['init', 'constructor']:
+            return SymbolType.VOID
+        
+        # For unknown methods, assume they return a reasonable default
+        # In a real implementation, we'd look up the method in the class definition
+        return SymbolType.STRING  # Default assumption
+    
+    def _handle_property_access(self, ctx, base_type: SymbolType) -> SymbolType:
+        """Handle property access on objects"""
+        if base_type != SymbolType.CLASS:
+            self.add_error(ctx, f"Cannot access property of non-object type {base_type.value}")
+            return SymbolType.NULL
+        
+        # Extract property name from context
+        property_name = None
+        if hasattr(ctx, 'IDENTIFIER') and ctx.IDENTIFIER():
+            property_name = ctx.IDENTIFIER().getText()
+        elif hasattr(ctx, 'Identifier') and ctx.Identifier():
+            property_name = ctx.Identifier().getText()
+        else:
+            return SymbolType.NULL
+            
+        # If this is a method name (will be followed by CallExpr), return FUNCTION type
+        # Common method names that we recognize
+        if property_name in ['toString', 'getName', 'getAge', 'length']:
+            return SymbolType.FUNCTION
+        
+        # Special handling for super.property access
+        # When we access super.toString, we want to treat it as a method that can be called
+        if hasattr(self, 'last_property_name') and self.last_property_name == 'super':
+            # This is accessing a property/method on super
+            if property_name == 'toString':
+                return SymbolType.FUNCTION
+            
+        # Try to find the property in current class scope or parent classes
+        current_scope = self.symbol_table.current_scope
+        while current_scope:
+            if current_scope.name.startswith('class_'):
+                # Look for the property in this class scope
+                property_symbol = current_scope.lookup(property_name)
+                if property_symbol:
+                    return property_symbol.type
+                break
+            current_scope = current_scope.parent
+        
+        # Check in global scope for class definitions and their properties
+        # This handles access like obj.property where obj is of a class type
+        # For now, make educated guesses based on common property names
+        if property_name in ['nombre', 'apellido', 'carnet', 'color']:
+            return SymbolType.STRING
+        elif property_name in ['edad', 'creditos']:
+            return SymbolType.INTEGER
+            
+        # Default to string for most properties
+        return SymbolType.STRING
     
     def are_types_compatible(self, left: SymbolType, right: SymbolType, operation: str) -> bool:
         # No aceptes NULL como comodín

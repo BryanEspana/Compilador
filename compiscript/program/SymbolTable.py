@@ -141,6 +141,10 @@ class SymbolTable:
         if self.current_scope.parent:
             self.current_scope = self.current_scope.parent
     
+    def get_global_scope(self) -> Scope:
+        """Get the global scope"""
+        return self.global_scope
+    
     def define(self, symbol: Symbol, line: int = None, column: int = None) -> bool:
         """Define a symbol in current scope"""
         symbol.line_declared = line

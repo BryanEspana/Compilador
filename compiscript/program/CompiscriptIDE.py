@@ -458,51 +458,7 @@ Universidad del Valle de Guatemala"""
     
     def load_sample_code(self):
         """Load sample code into the editor"""
-        sample_code = '''// Welcome to Compiscript IDE!
-// This is a sample program demonstrating language features
-
-// Constants and variables
-const PI: integer = 314;
-let radius: integer = 5;
-let area: integer;
-
-// Function definition
-function calculateArea(r: integer): integer {
-    return PI * r * r / 100;  // Simplified calculation
-}
-
-// Calculate area
-area = calculateArea(radius);
-
-// Control flow
-if (area > 50) {
-    print("Large circle");
-} else {
-    print("Small circle");
-}
-
-// Loop example
-for (let i: integer = 1; i <= 3; i = i + 1) {
-    print("Iteration: " + i);
-}
-
-// Class example
-class Shape {
-    let name: string;
-    
-    function constructor(name: string) {
-        this.name = name;
-    }
-    
-    function getName(): string {
-        return this.name;
-    }
-}
-
-let circle: Shape = new Shape("Circle");
-print("Shape: " + circle.getName());
-
-print("Program completed successfully!");'''
+        sample_code = ''''''
         
         self.code_editor.insert(1.0, sample_code)
         self.update_line_numbers()

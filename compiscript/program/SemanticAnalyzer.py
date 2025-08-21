@@ -334,7 +334,14 @@ class SemanticAnalyzer(CompiscriptListener):
                     func_symbol.add_parameter(param_name, param_type)
             
             # Define function in current scope
-            self.symbol_table.define(func_symbol, ctx.start.line, ctx.start.column)
+            if self.current_class:
+                # This is a method in a class
+                self.current_class.add_method(func_symbol)
+                # Also define in class scope for lookup
+                self.symbol_table.define(func_symbol, ctx.start.line, ctx.start.column)
+            else:
+                # This is a global function
+                self.symbol_table.define(func_symbol, ctx.start.line, ctx.start.column)
             
             # Enter function scope
             self.symbol_table.enter_scope(f"function_{func_name}")
@@ -518,6 +525,36 @@ class SemanticAnalyzer(CompiscriptListener):
     def enterAssignment(self, ctx: CompiscriptParser.AssignmentContext):
         """Handle assignments"""
         try:
+            # Check if this is a property assignment: expression '.' Identifier '=' expression ';'
+            if ctx.expression() and len(ctx.expression()) == 2:
+                # This is a property assignment like this.nombre = value
+                property_name = ctx.Identifier().getText()
+                
+                # Get the left-hand side (should be 'this' or an object)
+                lhs_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression()[0])
+                
+                # Check if we're assigning to 'this' inside a class
+                if lhs_type == SymbolType.CLASS and self.current_class:
+                    # Get the value type
+                    value_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression()[1])
+                    
+                    # Auto-declare the property in the current class if it doesn't exist
+                    if property_name not in self.current_class.attributes:
+                        property_symbol = Symbol(property_name, value_type, is_initialized=True)
+                        self.current_class.add_attribute(property_symbol)
+                        
+                        # Also add to current class scope for lookup
+                        self.symbol_table.define(property_symbol, ctx.start.line, ctx.start.column)
+                    else:
+                        # Property exists, check type compatibility
+                        existing_attr = self.current_class.attributes[property_name]
+                        if not self.expression_evaluator.are_types_compatible(existing_attr.type, value_type, "assignment"):
+                            self.add_error(ctx, f"Cannot assign {value_type.value} to property '{property_name}' of type {existing_attr.type.value}")
+                else:
+                    self.add_error(ctx, f"Cannot assign property to non-object type {lhs_type.value}")
+                return
+            
+            # This is a simple variable assignment: Identifier '=' expression ';'
             var_name = ctx.Identifier().getText()
             
             # Check if variable exists (in any scope)
@@ -544,12 +581,109 @@ class SemanticAnalyzer(CompiscriptListener):
             
             # Validate assignment expression type
             if ctx.expression():
-                expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression())
+                expr_type = self.expression_evaluator.evaluate_expression_type_only(ctx.expression()[0])
                 if symbol.type != SymbolType.NULL and expr_type != SymbolType.NULL:
                     if not self.expression_evaluator.are_types_compatible(symbol.type, expr_type, "assignment"):
                         self.add_error(ctx, f"Cannot assign {expr_type.value} to variable '{var_name}' of type {symbol.type.value}")
         except Exception as e:
             self.add_error(ctx, f"Error processing assignment: {str(e)}")
+    
+    def enterPropertyAssignExpr(self, ctx: CompiscriptParser.PropertyAssignExprContext):
+        """Handle property assignments like this.nombre = value"""
+        try:
+            property_name = ctx.Identifier().getText()
+            
+            # Get the left-hand side (should be 'this' or an object)
+            lhs_type = self.expression_evaluator.evaluate_expression_type_only(ctx.lhs)
+            
+            # Check if we're assigning to 'this' inside a class
+            if lhs_type == SymbolType.CLASS and self.current_class:
+                # Get the value type
+                value_type = self.expression_evaluator.evaluate_expression_type_only(ctx.assignmentExpr())
+                
+                # Auto-declare the property in the current class if it doesn't exist
+                if property_name not in self.current_class.attributes:
+                    property_symbol = Symbol(property_name, value_type, is_initialized=True)
+                    self.current_class.add_attribute(property_symbol)
+                    
+                    # Also add to current class scope
+                    class_scope = self.symbol_table.current_scope
+                    if class_scope and class_scope.name.startswith('class_'):
+                        self.symbol_table.define(property_symbol, ctx.start.line, ctx.start.column)
+                else:
+                    # Property exists, check type compatibility
+                    existing_attr = self.current_class.attributes[property_name]
+                    if not self.expression_evaluator.are_types_compatible(existing_attr.type, value_type, "assignment"):
+                        self.add_error(ctx, f"Cannot assign {value_type.value} to property '{property_name}' of type {existing_attr.type.value}")
+            else:
+                self.add_error(ctx, f"Cannot assign property to non-object type {lhs_type.value}")
+            
+        except Exception as e:
+            self.add_error(ctx, f"Error processing property assignment: {str(e)}")
+    
+    def enterInitMethod(self, ctx: CompiscriptParser.InitMethodContext):
+        """Handle init method (constructor)"""
+        try:
+            if not self.current_class:
+                self.add_error(ctx, "Init method must be inside a class")
+                return
+            
+            # Get return type (constructors are void)
+            return_type = SymbolType.VOID
+            
+            # Create constructor function symbol
+            constructor_symbol = FunctionSymbol("init", return_type)
+            
+            # Process parameters
+            param_names = set()
+            if ctx.parameters():
+                for param_ctx in ctx.parameters().parameter():
+                    param_name = param_ctx.Identifier().getText()
+                    
+                    # Check for duplicate parameter names
+                    if param_name in param_names:
+                        self.add_error(ctx, f"Duplicate parameter name '{param_name}' in constructor")
+                        continue
+                    param_names.add(param_name)
+                    
+                    # Check if parameter name is reserved
+                    if self.is_reserved_identifier(param_name):
+                        self.add_error(ctx, f"Parameter name '{param_name}' is a reserved keyword")
+                        continue
+                    
+                    # Get parameter type
+                    param_type = SymbolType.NULL
+                    if param_ctx.type_():
+                        param_type_text = param_ctx.type_().getText()
+                        param_type = self.get_type_from_string(param_type_text)
+                        if param_type == SymbolType.NULL and param_type_text != "null":
+                            self.add_error(ctx, f"Unknown parameter type '{param_type_text}' for parameter '{param_name}'")
+                            continue
+                    else:
+                        self.add_error(ctx, f"Parameter '{param_name}' must have a type annotation")
+                        continue
+                    
+                    constructor_symbol.add_parameter(param_name, param_type)
+            
+            # Add constructor to current class
+            self.current_class.constructor = constructor_symbol
+            
+            # Enter constructor scope  
+            self.symbol_table.enter_scope("init")
+            self.current_function = constructor_symbol
+            
+            # Add parameters to constructor scope
+            for param_name, param_type in constructor_symbol.parameters:
+                param_symbol = Symbol(param_name, param_type, is_initialized=True)
+                self.symbol_table.define(param_symbol, ctx.start.line, ctx.start.column)
+                
+        except Exception as e:
+            self.add_error(ctx, f"Error processing init method: {str(e)}")
+    
+    def exitInitMethod(self, ctx: CompiscriptParser.InitMethodContext):
+        """Exit init method scope"""
+        self.symbol_table.exit_scope()
+        self.current_function = None
     
     def has_errors(self) -> bool:
         """Check if there are semantic errors"""
