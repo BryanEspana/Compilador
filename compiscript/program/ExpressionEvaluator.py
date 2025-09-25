@@ -561,6 +561,10 @@ class ExpressionEvaluator:
                 if not class_symbol or class_symbol.type != SymbolType.CLASS:
                     self.add_error(ctx, f"Class '{class_name}' not found")
                     return SymbolType.NULL
+                
+                # Validate constructor parameters
+                self._validate_constructor_call(ctx, class_symbol)
+                
                 # Return the specific class type (we'll use CLASS for now, but could be more specific)
                 return SymbolType.CLASS
         
@@ -686,7 +690,10 @@ class ExpressionEvaluator:
     
     def _handle_method_call_with_name(self, ctx, base_type: SymbolType, method_name: str) -> SymbolType:
         """Handle method calls on class instances with known method name"""
-        if base_type != SymbolType.CLASS:
+        if base_type == SymbolType.NULL:
+            self.add_error(ctx, f"Cannot call method on null object")
+            return SymbolType.NULL
+        elif base_type != SymbolType.CLASS:
             self.add_error(ctx, f"Cannot call method on non-object type {base_type.value}")
             return SymbolType.NULL
         
@@ -727,22 +734,9 @@ class ExpressionEvaluator:
             self._validate_parameter_count(ctx, method_symbol, method_name)
             return method_symbol.return_type
         
-        # Fallback to hardcoded common method types if not found in symbol table
-        # Determine return type based on method name
-        if method_name == 'toString':
-            return SymbolType.STRING
-        elif method_name == 'length':
-            return SymbolType.INTEGER
-        elif method_name in ['init', 'constructor']:
-            return SymbolType.VOID
-        elif method_name == 'getName':
-            return SymbolType.STRING
-        elif method_name in ['getAge', 'getCredits', 'getEdad']:
-            return SymbolType.INTEGER
-        
-        # For unknown methods, assume they return a reasonable default
-        # In a real implementation, we'd look up the method in the class definition
-        return SymbolType.STRING  # Default assumption
+        # Method not found - this is an error
+        self.add_error(ctx, f"Method '{method_name}' does not exist in class")
+        return SymbolType.NULL
     
     def _handle_method_call(self, ctx, base_type: SymbolType) -> SymbolType:
         """Handle method calls on class instances"""
@@ -773,7 +767,10 @@ class ExpressionEvaluator:
     
     def _handle_property_access(self, ctx, base_type: SymbolType) -> SymbolType:
         """Handle property access on objects"""
-        if base_type != SymbolType.CLASS:
+        if base_type == SymbolType.NULL:
+            self.add_error(ctx, f"Cannot access property of null object")
+            return SymbolType.NULL
+        elif base_type != SymbolType.CLASS:
             self.add_error(ctx, f"Cannot access property of non-object type {base_type.value}")
             return SymbolType.NULL
         
@@ -818,15 +815,8 @@ class ExpressionEvaluator:
                     property_found = True
                     return property_symbol.type
         
-        # If we reach here, the property was not found in any class
-        # Check if it's a common hardcoded property (for backward compatibility)
-        if property_name in ['nombre', 'apellido', 'carnet', 'color']:
-            return SymbolType.STRING
-        elif property_name in ['edad', 'creditos', 'grado']:
-            return SymbolType.INTEGER
-        
         # Property not found - this is an error
-        self.add_error(ctx, f"Property '{property_name}' does not exist")
+        self.add_error(ctx, f"Property '{property_name}' does not exist in class")
         return SymbolType.NULL
     
     def are_types_compatible(self, left: SymbolType, right: SymbolType, operation: str) -> bool:
@@ -886,3 +876,28 @@ class ExpressionEvaluator:
         # Validate the counts match
         if argument_count != expected_count:
             self.add_error(ctx, f"Function '{function_name}' expects {expected_count} parameter(s), but {argument_count} were provided")
+    
+    def _validate_constructor_call(self, ctx, class_symbol):
+        """Validate constructor call parameters"""
+        if not isinstance(class_symbol, ClassSymbol):
+            return
+        
+        # Get constructor
+        constructor = class_symbol.constructor
+        if not constructor:
+            # No constructor defined - check if arguments were provided
+            argument_count = 0
+            if hasattr(ctx, 'arguments') and ctx.arguments():
+                if hasattr(ctx.arguments(), 'expression') and ctx.arguments().expression():
+                    argument_expressions = ctx.arguments().expression()
+                    if isinstance(argument_expressions, list):
+                        argument_count = len(argument_expressions)
+                    else:
+                        argument_count = 1
+            
+            if argument_count > 0:
+                self.add_error(ctx, f"Class '{class_symbol.name}' has no constructor, but {argument_count} argument(s) were provided")
+            return
+        
+        # Validate constructor parameters
+        self._validate_parameter_count(ctx, constructor, f"{class_symbol.name} constructor")
