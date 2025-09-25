@@ -30,6 +30,7 @@ class CollectingErrorListener(ErrorListener):
     def get_errors(self):
         return self.errors
 
+
 class CompiscriptIDE:
     def __init__(self, root):
         self.root = root
@@ -118,18 +119,55 @@ class CompiscriptIDE:
 
         # Line numbers
         self.line_numbers = tk.Text(editor_container, width=4, padx=3, takefocus=0,
-                                    border=0, state='disabled', wrap='none')
+                                    border=0, state='disabled', wrap='none',
+                                    font=('Consolas', 11), bg='#f0f0f0')
         self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
 
         # Code editor
-        self.code_editor = scrolledtext.ScrolledText(editor_container, wrap=tk.NONE,
-                                                     font=('Consolas', 11))
+        self.code_editor = tk.Text(editor_container, wrap=tk.NONE,
+                                  font=('Consolas', 11), undo=True)
         self.code_editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Single scrollbar for both widgets
+        scrollbar = ttk.Scrollbar(editor_container, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Configure both text widgets to update the scrollbar
+        def on_textscroll(*args):
+            scrollbar.set(*args)
+            self.line_numbers.yview_moveto(args[0])
+            # Force immediate update of line numbers
+            self.line_numbers.update_idletasks()
+        
+        # Configure scrollbar to control both widgets
+        def on_scrollbar(*args):
+            self.code_editor.yview(*args)
+            self.line_numbers.yview(*args)
+            # Force immediate update of both widgets
+            self.code_editor.update_idletasks()
+            self.line_numbers.update_idletasks()
+        
+        self.code_editor.configure(yscrollcommand=on_textscroll)
+        scrollbar.configure(command=on_scrollbar)
+        
+        # Bind mouse wheel for better synchronization
+        def on_mousewheel(event):
+            # Scroll both widgets
+            self.code_editor.yview_scroll(int(-1*(event.delta/120)), "units")
+            self.line_numbers.yview_scroll(int(-1*(event.delta/120)), "units")
+            # Force immediate update
+            self.code_editor.update_idletasks()
+            self.line_numbers.update_idletasks()
+            return "break"  # Prevent default scrolling
+        
+        self.code_editor.bind("<MouseWheel>", on_mousewheel)  # Windows/Mac
+        self.code_editor.bind("<Button-4>", lambda e: on_mousewheel(type('', (), {'delta': 120})()))  # Linux scroll up
+        self.code_editor.bind("<Button-5>", lambda e: on_mousewheel(type('', (), {'delta': -120})()))  # Linux scroll down
 
         # Bind events for line numbers and modification tracking
         self.code_editor.bind('<KeyRelease>', self.on_text_change)
         self.code_editor.bind('<Button-1>', self.on_text_change)
-        self.code_editor.bind('<MouseWheel>', self.on_text_change)
+        self.code_editor.bind('<<Modified>>', self.on_modification)
 
         # Output frame
         output_frame = ttk.LabelFrame(paned_window, text="Compilation Output", padding=5)
@@ -152,8 +190,11 @@ class CompiscriptIDE:
         self.line_numbers.delete(1.0, tk.END)
         
         # Get number of lines in editor
-        lines = self.code_editor.get(1.0, tk.END).count('\\n')
-        line_numbers_string = "\\n".join(str(i) for i in range(1, lines + 1))
+        content = self.code_editor.get(1.0, tk.END)
+        lines = content.count('\n')
+        
+        # Create line numbers string
+        line_numbers_string = '\n'.join(str(i) for i in range(1, lines + 1))
         
         self.line_numbers.insert(1.0, line_numbers_string)
         self.line_numbers.config(state='disabled')
@@ -161,9 +202,14 @@ class CompiscriptIDE:
     def on_text_change(self, event=None):
         """Handle text changes in the editor"""
         self.update_line_numbers()
-        if not self.file_modified:
-            self.file_modified = True
-            self.update_title()
+    
+    def on_modification(self, event=None):
+        """Handle modification events"""
+        if self.code_editor.edit_modified():
+            if not self.file_modified:
+                self.file_modified = True
+                self.update_title()
+            self.code_editor.edit_modified(False)
     
     def update_title(self):
         """Update window title"""
@@ -184,6 +230,7 @@ class CompiscriptIDE:
         self.current_file = None
         self.file_modified = False
         self.update_title()
+        self.update_line_numbers()
         self.status_var.set("New file created")
     
     def open_file(self):
@@ -207,10 +254,11 @@ class CompiscriptIDE:
                 self.current_file = file_path
                 self.file_modified = False
                 self.update_title()
+                self.update_line_numbers()
                 self.status_var.set(f"Opened: {os.path.basename(file_path)}")
                 
             except Exception as e:
-                messagebox.showerror("Error", f"Could not open file:\\n{str(e)}")
+                messagebox.showerror("Error", f"Could not open file:\n{str(e)}")
     
     def save_file(self):
         """Save the current file"""
@@ -244,7 +292,7 @@ class CompiscriptIDE:
             self.status_var.set(f"Saved: {os.path.basename(file_path)}")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Could not save file:\\n{str(e)}")
+            messagebox.showerror("Error", f"Could not save file:\n{str(e)}")
     
     def ask_save_changes(self):
         """Ask user if they want to save changes"""
