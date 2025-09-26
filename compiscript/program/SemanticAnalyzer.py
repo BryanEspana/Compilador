@@ -7,6 +7,7 @@ from CompiscriptParser import CompiscriptParser
 from CompiscriptListener import CompiscriptListener
 from SymbolTable import SymbolTable, Symbol, FunctionSymbol, ClassSymbol, SymbolType, Scope
 from ExpressionEvaluator import ExpressionEvaluator
+from TACCodeGenerator import TACCodeGenerator
 from typing import Dict, List, Optional, Any, Union
 import sys
 
@@ -21,6 +22,10 @@ class SemanticAnalyzer(CompiscriptListener):
         self.in_loop = 0  # Counter for nested loops
         self.errors: List[str] = []
         self.in_try_catch = False  # Track if we're in a try-catch block
+        
+        # TAC Code Generation
+        self.tac_generator = TACCodeGenerator(emit_params=True)
+        self.intermediate_code: str = ""
         
         # Type compatibility matrix
         self.compatible_types = {
@@ -783,3 +788,46 @@ class SemanticAnalyzer(CompiscriptListener):
         symbol = self.symbol_table.lookup(var_name)
         if symbol and not symbol.is_initialized and not symbol.is_constant:
             self.add_error(ctx, f"Variable '{var_name}' used before initialization")
+    
+    def generate_intermediate_code(self, tree):
+        """Generate TAC intermediate code if semantic analysis is successful"""
+        try:
+            from antlr4 import ParseTreeWalker
+            walker = ParseTreeWalker()
+            walker.walk(self.tac_generator, tree)
+            self.intermediate_code = self.tac_generator.get_tac_code()
+        except Exception as e:
+            self.intermediate_code = f"Error generating intermediate code: {str(e)}"
+    
+    def get_intermediate_code(self) -> str:
+        """Get the generated intermediate code"""
+        return self.intermediate_code if self.intermediate_code else "(No intermediate code generated)"
+    
+    def has_errors(self) -> bool:
+        """Check if there are semantic errors"""
+        return len(self.errors) > 0
+    
+    def get_errors(self) -> List[str]:
+        """Get all semantic errors"""
+        return self.errors.copy()
+    
+    def print_errors(self):
+        """Print all semantic errors"""
+        if self.errors:
+            print("Semantic Errors:")
+            for i, error in enumerate(self.errors, 1):
+                print(f"{i}. {error}")
+        else:
+            print("No semantic errors found.")
+    
+    def print_symbol_table(self):
+        """Print the symbol table"""
+        print("\n=== SYMBOL TABLE ===")
+        self.symbol_table.print_table()
+        print("====================")
+    
+    def print_intermediate_code(self):
+        """Print the intermediate code"""
+        print("\n=== INTERMEDIATE CODE ===")
+        print(self.get_intermediate_code())
+        print("==========================")
