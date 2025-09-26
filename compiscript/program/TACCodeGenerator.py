@@ -5,7 +5,18 @@ Generates TAC following the exact specification:
 - Frame pointer: fp[k] para acceder a slots
 - Llamadas: CALL f (y el valor de retorno queda en R)
 - Asignación del retorno: tX := R
-- Parámetros: PARAM argN antes del CALL f (emit_params flag)
+- Parámetros: PARAM argN                 # Emitir parámetros simples
+                num_args = 0
+                if args_text.strip():
+                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                    num_args = len(args)
+                    for arg in args:
+                        arg_result = self._evaluate_simple_operand(arg)
+                        if self.emit_params:
+                            self.emit(f"PARAM {arg_result}")
+                
+                # Emitir llamada con formato CALL func,num_args
+                self.emit(f"CALL {func_name},{num_args}")ALL f (emit_params flag)
 - Saltos/labels: LABEL_..., IF t > 0 GOTO L (verdadero ≡ entero > 0)
 - Funciones: FUNCTION name: ...cuerpo... END FUNCTION name
 """
@@ -50,19 +61,40 @@ class TACCodeGenerator(CompiscriptListener):
         self.label_counter += 1
         return label_name
     
-    def new_fp_slot(self, var_name: str = None) -> int:
-        """Asigna un nuevo slot fp[k]"""
+    def new_fp_slot(self, var_name: str = None, var_type: str = "integer") -> int:
+        """Asigna un nuevo slot fp[k] basado en desplazamiento real"""
         slot = self.current_slot
-        self.current_slot += 1
+        type_size = self._get_type_size(var_type)
         if var_name:
             self.variable_slots[var_name] = slot
+        self.current_slot += type_size
         return slot
+    
+    def _get_type_size(self, var_type: str) -> int:
+        """Obtiene el tamaño en bytes de un tipo de datos"""
+        type_sizes = {
+            "integer": 4,
+            "float": 8,
+            "boolean": 1,
+            "string": 8,  # pointer
+            "void": 0
+        }
+        return type_sizes.get(var_type, 4)  # default integer = 4 bytes
     
     def get_fp_slot(self, var_name: str) -> str:
         """Obtiene el slot fp[k] para una variable"""
         if var_name not in self.variable_slots:
             self.new_fp_slot(var_name)
         return f"fp[{self.variable_slots[var_name]}]"
+    
+    def get_fp_slot_lazy(self, var_name: str) -> str:
+        """Obtiene el slot fp[k] para una variable solo si ya existe"""
+        if var_name in self.variable_slots:
+            return f"fp[{self.variable_slots[var_name]}]"
+        else:
+            # Crear el slot ahora que se necesita (asumiendo integer por defecto)
+            slot = self.new_fp_slot(var_name, "integer")
+            return f"fp[{slot}]"
     
     def emit(self, instruction: str):
         """Emite una instrucción TAC"""
@@ -98,9 +130,9 @@ class TACCodeGenerator(CompiscriptListener):
         if self.emit_params:
             self.emit(f"PARAM {arg}")
     
-    def emit_call(self, func_name: str):
-        """Emite CALL f"""
-        self.emit(f"CALL {func_name}")
+    def emit_call(self, func_name: str, num_params: int = 0):
+        """Emite CALL f,num_params"""
+        self.emit(f"CALL {func_name},{num_params}")
     
     def emit_return(self, value: str = None):
         """Emite RETURN value"""
@@ -142,13 +174,17 @@ class TACCodeGenerator(CompiscriptListener):
         self.function_stack.append(func_name)
         self.scope_depth += 1
         
-        # Resetear slots para nueva función
+        # Guardar el estado anterior
         old_slots = self.variable_slots.copy()
         old_slot_counter = self.current_slot
-        self.variable_slots.clear()
-        self.current_slot = 0
         
-        # Asignar slots para parámetros (negativos si lo prefieres)
+        # Para funciones, NO usar offset mínimo
+        # Los slots deben calcularse basados en desplazamientos reales
+        # Si no hay variables globales, empezar desde 0
+        
+        # Los slots de parámetros serán negativos para diferenciarlos
+        
+        # Asignar slots para parámetros (negativos para parámetros)
         if ctx.parameters() and ctx.parameters().parameter():
             for i, param in enumerate(ctx.parameters().parameter()):
                 if param.Identifier():
@@ -179,43 +215,20 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        slot = self.get_fp_slot(var_name)
         
-        # Si hay inicializador, evaluarlo
+        # Extraer tipo de datos
+        var_type = "integer"  # default
+        if ctx.typeAnnotation() and ctx.typeAnnotation().type_():
+            var_type = ctx.typeAnnotation().type_().getText()
+        
+        # SIEMPRE reservar slot para declaraciones (para calcular desplazamientos correctos)
+        # pero solo generar código TAC si hay inicializador
+        slot = self.new_fp_slot(var_name, var_type)
+        
+        # Solo generar código TAC si hay inicializador explícito
         if ctx.initializer() and ctx.initializer().expression():
             result = self.visit_expression(ctx.initializer().expression())
-            self.emit_assign(slot, result)
-        else:
-            # Verificar si hay asignación directa en el texto
-            text = ctx.getText()
-            if "=" in text:
-                # Buscar posibles llamadas a función en la inicialización
-                if "(" in text and ")" in text:
-                    # Es posible que sea una llamada a función, dejar que se procese después
-                    self.emit_assign(slot, "0")  # Temporal
-                else:
-                    # Extraer valor inicial básico
-                    parts = text.split("=")
-                    if len(parts) > 1:
-                        value = parts[1].strip().rstrip(";")
-                        if value.isdigit():
-                            self.emit_assign(slot, value)
-                        elif value.startswith('"') and value.endswith('"'):
-                            self.emit_assign(slot, value)
-                        elif value == "true":
-                            self.emit_assign(slot, "1")
-                        elif value == "false":
-                            self.emit_assign(slot, "0")
-                        else:
-                            # Puede ser una variable
-                            if value.isalnum():
-                                self.emit_assign(slot, self.get_fp_slot(value))
-                            else:
-                                self.emit_assign(slot, "0")
-                    else:
-                        self.emit_assign(slot, "0")
-            else:
-                self.emit_assign(slot, "0")
+            self.emit_assign(f"fp[{slot}]", result)
     
     # ==================== EXPRESSIONS ====================
     
@@ -317,16 +330,18 @@ class TACCodeGenerator(CompiscriptListener):
                 func_name = func_match[0].strip()
                 args_text = func_match[1].rstrip(')')
                 
-                # Emitir parámetros simples
+                # Contar argumentos
+                num_args = 0
                 if args_text.strip():
                     args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                    num_args = len(args)
                     for arg in args:
                         arg_result = self._evaluate_simple_operand(arg)
                         if self.emit_params:
-                            self.emit_param(arg_result)
+                            self.emit(f"PARAM {arg_result}")
                 
-                # Emitir llamada
-                self.emit_call(func_name)
+                # Emitir llamada con formato CALL func,num_args
+                self.emit(f"CALL {func_name},{num_args}")
                 
                 # Retornar resultado
                 result = self.new_temp()
@@ -371,7 +386,7 @@ class TACCodeGenerator(CompiscriptListener):
             return "0"
         
         if operand.isalnum():
-            return self.get_fp_slot(operand)
+            return self.get_fp_slot_lazy(operand)
         
         return "0"
     
@@ -609,20 +624,23 @@ class TACCodeGenerator(CompiscriptListener):
                     if hasattr(child, 'getText') and child.getText() not in [',', '(', ')']:
                         expressions.append(child)
             
+            num_params = 0
             if expressions:
                 if isinstance(expressions, list):
+                    num_params = len(expressions)
                     for arg in expressions:
                         if hasattr(arg, 'getText'):
                             arg_result = self.visit_expression(arg)
-                            self.emit_param(arg_result)
+                            self.emit(f"PARAM {arg_result}")
                 else:
                     # Es una sola expresión
+                    num_params = 1
                     if hasattr(expressions, 'getText'):
                         arg_result = self.visit_expression(expressions)
-                        self.emit_param(arg_result)
+                        self.emit(f"PARAM {arg_result}")
         
-        # Emitir CALL
-        self.emit_call(func_name)
+        # Emitir CALL con número de parámetros
+        self.emit(f"CALL {func_name},{num_params}")
         
         # El resultado queda en R, asignarlo a un temporal
         result = self.new_temp()
@@ -634,7 +652,37 @@ class TACCodeGenerator(CompiscriptListener):
     def enterExpressionStatement(self, ctx: CompiscriptParser.ExpressionStatementContext):
         """Statement de expresión"""
         if ctx.expression():
-            self.visit_expression(ctx.expression())
+            # Verificar si es una llamada a función directa
+            expr_text = ctx.expression().getText()
+            if "(" in expr_text and ")" in expr_text:
+                # Es una llamada a función, procesarla específicamente
+                self._process_function_call_statement(expr_text)
+            else:
+                self.visit_expression(ctx.expression())
+    
+    def _process_function_call_statement(self, call_text: str):
+        """Procesa un statement que es una llamada a función"""
+        if "(" in call_text and ")" in call_text:
+            func_match = call_text.split('(', 1)
+            if len(func_match) == 2:
+                func_name = func_match[0].strip()
+                args_text = func_match[1].rstrip(')')
+                
+                # Emitir parámetros
+                num_args = 0
+                if args_text.strip():
+                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                    num_args = len(args)
+                    for arg in args:
+                        arg_result = self._evaluate_simple_operand(arg)
+                        self.emit(f"PARAM {arg_result}")
+                
+                # Emitir llamada
+                self.emit(f"CALL {func_name},{num_args}")
+                
+                # Asignar resultado a temporal (aunque no se use)
+                result = self.new_temp()
+                self.emit_assign(result, "R")
     
     def enterAssignment(self, ctx: CompiscriptParser.AssignmentContext):
         """Asignación directa"""
@@ -642,7 +690,7 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        var_slot = self.get_fp_slot(var_name)
+        var_slot = self.get_fp_slot_lazy(var_name)  # Reservar slot cuando se use
         
         # Verificar si expression() devuelve una lista o un contexto único
         expr = ctx.expression()
@@ -708,8 +756,9 @@ class TACCodeGenerator(CompiscriptListener):
         if not ctx.expression():
             return
         
-        # Generar labels
-        loop_label = self.new_label("WHILE")
+        # Generar labels siguiendo el formato de la imagen
+        loop_label = self.new_label("STARTWHILE")
+        true_label = self.new_label("LABEL_TRUE")  
         end_label = self.new_label("ENDWHILE")
         
         # Emitir label de inicio de loop
@@ -718,8 +767,14 @@ class TACCodeGenerator(CompiscriptListener):
         # Evaluar condición
         condition = self.visit_expression(ctx.expression())
         
-        # IF condition <= 0 GOTO end_label (salir si falso)
-        self.emit(f"IF {condition} <= 0 GOTO {end_label}")
+        # IF condition > 0 GOTO true_label (entrar al cuerpo si verdadero)
+        self.emit(f"IF {condition} > 0 GOTO {true_label}")
+        
+        # Si la condición es falsa, saltar al final
+        self.emit(f"GOTO {end_label}")
+        
+        # Label para el cuerpo del while
+        self.emit_label(true_label)
         
         # Guardar labels
         self.loop_labels.append((loop_label, end_label))
