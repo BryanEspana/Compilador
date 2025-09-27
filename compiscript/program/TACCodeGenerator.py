@@ -130,9 +130,12 @@ class TACCodeGenerator(CompiscriptListener):
         if self.emit_params:
             self.emit(f"PARAM {arg}")
     
-    def emit_call(self, func_name: str, num_params: int = 0):
-        """Emite CALL f,num_params"""
-        self.emit(f"CALL {func_name},{num_params}")
+    def emit_call(self, func_name: str, param_count: int = None):
+        """Emite CALL f"""
+        if param_count is not None:
+            self.emit(f"CALL {func_name}, {param_count}")
+        else:
+            self.emit(f"CALL {func_name}")
     
     def emit_return(self, value: str = None):
         """Emite RETURN value"""
@@ -215,20 +218,8 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        
-        # Extraer tipo de datos
-        var_type = "integer"  # default
-        if ctx.typeAnnotation() and ctx.typeAnnotation().type_():
-            var_type = ctx.typeAnnotation().type_().getText()
-        
-        # SIEMPRE reservar slot para declaraciones (para calcular desplazamientos correctos)
-        # pero solo generar código TAC si hay inicializador
-        slot = self.new_fp_slot(var_name, var_type)
-        
-        # Solo generar código TAC si hay inicializador explícito
-        if ctx.initializer() and ctx.initializer().expression():
-            result = self.visit_expression(ctx.initializer().expression())
-            self.emit_assign(f"fp[{slot}]", result)
+        # Solo reservar el slot, no inicializar
+        self.get_fp_slot(var_name)
     
     # ==================== EXPRESSIONS ====================
     
@@ -257,6 +248,31 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Obtener el texto completo para casos simples
         text = ctx.getText()
+        
+        
+        # Verificar si es una llamada a función completa
+        if "(" in text and ")" in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
+            # Posible llamada a función
+            func_match = text.split('(', 1)
+            if len(func_match) == 2:
+                func_name = func_match[0].strip()
+                args_text = func_match[1].rstrip(')')
+                
+                # Emitir parámetros simples
+                if args_text.strip():
+                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                    for arg in args:
+                        arg_result = self._evaluate_simple_operand(arg)
+                        if self.emit_params:
+                            self.emit_param(arg_result)
+                
+                # Emitir llamada
+                self.emit_call(func_name)
+                
+                # Retornar resultado
+                result = self.new_temp()
+                self.emit_assign(result, "R")
+                return result
         
         # Casos simples: literales directos
         if text.isdigit():
@@ -403,6 +419,38 @@ class TACCodeGenerator(CompiscriptListener):
             op_child = children[1]
             right_child = children[2]
             
+            
+            # Verificar si es una llamada a función: func_name ( args )
+            if (hasattr(left_child, 'getText') and 
+                hasattr(op_child, 'getText') and op_child.getText() == '(' and
+                hasattr(right_child, 'getText') and right_child.getText() == ')'):
+                # Es una llamada a función sin argumentos
+                func_name = left_child.getText()
+                self.emit_call(func_name)
+                result = self.new_temp()
+                self.emit_assign(result, "R")
+                return result
+            
+            # Verificar si es una llamada a función con argumentos: func_name ( arg )
+            if (hasattr(left_child, 'getText') and 
+                hasattr(op_child, 'getText') and op_child.getText() == '('):
+                # Es una llamada a función con argumentos
+                func_name = left_child.getText()
+                # Evaluar el argumento
+                arg_result = self.visit_expression(right_child)
+                if self.emit_params:
+                    self.emit_param(arg_result)
+                self.emit_call(func_name)
+                result = self.new_temp()
+                self.emit_assign(result, "R")
+                return result
+            
+            # Verificar si es una expresión con paréntesis: ( arg )
+            if (hasattr(left_child, 'getText') and left_child.getText() == '(' and
+                hasattr(right_child, 'getText') and right_child.getText() == ')'):
+                # Es una expresión con paréntesis, evaluar el contenido
+                return self.visit_expression(op_child)
+            
             # Si el operador es un token terminal, obtener texto
             if hasattr(op_child, 'getText'):
                 op_text = op_child.getText()
@@ -421,6 +469,16 @@ class TACCodeGenerator(CompiscriptListener):
         elif len(children) == 2:
             op_child = children[0]
             operand_child = children[1]
+            
+            # Verificar si es una llamada a función: func_name ( args )
+            if (hasattr(op_child, 'getText') and op_child.getText() == '(' and
+                hasattr(operand_child, 'getText') and operand_child.getText() == ')'):
+                # Es una llamada a función sin argumentos
+                func_name = op_child.getText() if hasattr(op_child, 'getText') else str(op_child)
+                self.emit_call(func_name)
+                result = self.new_temp()
+                self.emit_assign(result, "R")
+                return result
             
             op_text = op_child.getText() if hasattr(op_child, 'getText') else str(op_child)
             operand_result = self.visit_expression(operand_child) if hasattr(operand_child, 'getText') else self._evaluate_simple_operand(str(operand_child))
@@ -756,10 +814,10 @@ class TACCodeGenerator(CompiscriptListener):
         if not ctx.expression():
             return
         
-        # Generar labels siguiendo el formato de la imagen
-        loop_label = self.new_label("STARTWHILE")
-        true_label = self.new_label("LABEL_TRUE")  
-        end_label = self.new_label("ENDWHILE")
+        # Generar labels con el mismo contador para mantener consistencia
+        loop_label = f"STARTWHILE_{self.label_counter}"
+        true_label = f"LABEL_TRUE_{self.label_counter}"
+        end_label = f"ENDWHILE_{self.label_counter}"
         
         # Emitir label de inicio de loop
         self.emit_label(loop_label)
@@ -786,7 +844,7 @@ class TACCodeGenerator(CompiscriptListener):
         
         loop_label, end_label = self.loop_labels.pop()
         
-        # Saltar de vuelta al inicio
+        # Saltar de vuelta al inicio del while
         self.emit_goto(loop_label)
         
         # Emitir label de salida
