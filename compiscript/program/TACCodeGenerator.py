@@ -42,9 +42,17 @@ class TACCodeGenerator(CompiscriptListener):
         self.scope_depth = 0
         self.loop_labels: List[tuple] = []  # (continue_label, break_label)
         
-        # Mapeo de variables a fp slots
-        self.variable_slots: Dict[str, int] = {}
-        self.current_slot = 0
+        # Mapeo de variables con información de ámbito
+        self.global_variables: Dict[str, int] = {}  # nombre -> desplazamiento global
+        self.local_variables: Dict[str, int] = {}   # nombre -> desplazamiento local 
+        self.current_global_offset = 0
+        self.current_local_offset = 0
+        
+        # Stack de ámbitos para manejar funciones anidadas
+        self.scope_stack = ["global"]
+        
+        # Variables por ámbito (para restaurar al salir de funciones)
+        self.scope_variables = {"global": {}}
         
         # Resultados de expresiones para el visitor pattern
         self.expression_results: Dict[int, str] = {}
@@ -61,14 +69,27 @@ class TACCodeGenerator(CompiscriptListener):
         self.label_counter += 1
         return label_name
     
-    def new_fp_slot(self, var_name: str = None, var_type: str = "integer") -> int:
-        """Asigna un nuevo slot fp[k] basado en desplazamiento real"""
-        slot = self.current_slot
+    def new_variable_slot(self, var_name: str, var_type: str = "integer") -> tuple:
+        """Asigna un nuevo slot para variable (global o local según ámbito actual)"""
         type_size = self._get_type_size(var_type)
-        if var_name:
-            self.variable_slots[var_name] = slot
-        self.current_slot += type_size
-        return slot
+        
+        if self.scope_stack[-1] == "global":
+            # Variable global
+            offset = self.current_global_offset
+            self.global_variables[var_name] = offset
+            self.scope_variables["global"][var_name] = offset
+            self.current_global_offset += type_size
+            return ("G", offset)
+        else:
+            # Variable local de función
+            offset = self.current_local_offset
+            self.local_variables[var_name] = offset
+            current_scope = self.scope_stack[-1]
+            if current_scope not in self.scope_variables:
+                self.scope_variables[current_scope] = {}
+            self.scope_variables[current_scope][var_name] = offset
+            self.current_local_offset += type_size
+            return ("fp", offset)
     
     def _get_type_size(self, var_type: str) -> int:
         """Obtiene el tamaño en bytes de un tipo de datos"""
@@ -81,20 +102,32 @@ class TACCodeGenerator(CompiscriptListener):
         }
         return type_sizes.get(var_type, 4)  # default integer = 4 bytes
     
-    def get_fp_slot(self, var_name: str) -> str:
-        """Obtiene el slot fp[k] para una variable"""
-        if var_name not in self.variable_slots:
-            self.new_fp_slot(var_name)
-        return f"fp[{self.variable_slots[var_name]}]"
+    def get_variable_slot(self, var_name: str, var_type: str = "integer") -> str:
+        """Obtiene el slot para una variable (busca en ámbito local primero, luego global)"""
+        # Buscar primero en ámbito local actual
+        current_scope = self.scope_stack[-1]
+        if current_scope != "global" and current_scope in self.scope_variables:
+            if var_name in self.scope_variables[current_scope]:
+                offset = self.scope_variables[current_scope][var_name]
+                return f"fp[{offset}]"
+        
+        # Buscar en variables locales de la función actual
+        if var_name in self.local_variables and current_scope != "global":
+            offset = self.local_variables[var_name]
+            return f"fp[{offset}]"
+        
+        # Buscar en variables globales
+        if var_name in self.global_variables:
+            offset = self.global_variables[var_name]
+            return f"G[{offset}]"
+        
+        # Variable no encontrada, crearla en el ámbito actual
+        memory_type, offset = self.new_variable_slot(var_name, var_type)
+        return f"{memory_type}[{offset}]"
     
-    def get_fp_slot_lazy(self, var_name: str) -> str:
-        """Obtiene el slot fp[k] para una variable solo si ya existe"""
-        if var_name in self.variable_slots:
-            return f"fp[{self.variable_slots[var_name]}]"
-        else:
-            # Crear el slot ahora que se necesita (asumiendo integer por defecto)
-            slot = self.new_fp_slot(var_name, "integer")
-            return f"fp[{slot}]"
+    def get_variable_slot_lazy(self, var_name: str) -> str:
+        """Obtiene el slot para una variable, creándola si es necesario"""
+        return self.get_variable_slot(var_name, "integer")
     
     def emit(self, instruction: str):
         """Emite una instrucción TAC"""
@@ -130,12 +163,9 @@ class TACCodeGenerator(CompiscriptListener):
         if self.emit_params:
             self.emit(f"PARAM {arg}")
     
-    def emit_call(self, func_name: str, param_count: int = None):
-        """Emite CALL f"""
-        if param_count is not None:
-            self.emit(f"CALL {func_name}, {param_count}")
-        else:
-            self.emit(f"CALL {func_name}")
+    def emit_call(self, func_name: str, num_params: int = 0):
+        """Emite CALL f,num_params"""
+        self.emit(f"CALL {func_name},{num_params}")
     
     def emit_return(self, value: str = None):
         """Emite RETURN value"""
@@ -177,13 +207,14 @@ class TACCodeGenerator(CompiscriptListener):
         self.function_stack.append(func_name)
         self.scope_depth += 1
         
-        # Guardar el estado anterior
-        old_slots = self.variable_slots.copy()
-        old_slot_counter = self.current_slot
+        # Entrar en nuevo ámbito de función
+        self.scope_stack.append(f"function_{func_name}")
+        current_scope = self.scope_stack[-1]
+        self.scope_variables[current_scope] = {}
         
-        # Para funciones, NO usar offset mínimo
-        # Los slots deben calcularse basados en desplazamientos reales
-        # Si no hay variables globales, empezar desde 0
+        # Resetear contador local para esta función
+        self.current_local_offset = 0
+        self.local_variables.clear()
         
         # Los slots de parámetros serán negativos para diferenciarlos
         
@@ -193,7 +224,9 @@ class TACCodeGenerator(CompiscriptListener):
                 if param.Identifier():
                     param_name = param.Identifier().getText()
                     # Usar slots negativos para parámetros
-                    self.variable_slots[param_name] = -(i + 1)
+                    param_offset = -(i + 1)
+                    self.local_variables[param_name] = param_offset
+                    self.scope_variables[current_scope][param_name] = param_offset
         
         self.emit(f"FUNCTION {func_name}:")
     
@@ -205,6 +238,10 @@ class TACCodeGenerator(CompiscriptListener):
                 self.emit("RETURN")
             
             self.emit(f"END FUNCTION {self.current_function}")
+            
+            # Salir del ámbito de función
+            if len(self.scope_stack) > 1:
+                self.scope_stack.pop()
             
             self.function_stack.pop()
             self.current_function = self.function_stack[-1] if self.function_stack else None
@@ -218,8 +255,20 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        # Solo reservar el slot, no inicializar
-        self.get_fp_slot(var_name)
+        
+        # Extraer tipo de datos
+        var_type = "integer"  # default
+        if ctx.typeAnnotation() and ctx.typeAnnotation().type_():
+            var_type = ctx.typeAnnotation().type_().getText()
+        
+        # SIEMPRE reservar slot para declaraciones (para calcular desplazamientos correctos)
+        # pero solo generar código TAC si hay inicializador
+        memory_type, offset = self.new_variable_slot(var_name, var_type)
+        
+        # Solo generar código TAC si hay inicializador explícito
+        if ctx.initializer() and ctx.initializer().expression():
+            result = self.visit_expression(ctx.initializer().expression())
+            self.emit_assign(f"{memory_type}[{offset}]", result)
     
     # ==================== EXPRESSIONS ====================
     
@@ -248,31 +297,6 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Obtener el texto completo para casos simples
         text = ctx.getText()
-        
-        
-        # Verificar si es una llamada a función completa
-        if "(" in text and ")" in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
-            # Posible llamada a función
-            func_match = text.split('(', 1)
-            if len(func_match) == 2:
-                func_name = func_match[0].strip()
-                args_text = func_match[1].rstrip(')')
-                
-                # Emitir parámetros simples
-                if args_text.strip():
-                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
-                    for arg in args:
-                        arg_result = self._evaluate_simple_operand(arg)
-                        if self.emit_params:
-                            self.emit_param(arg_result)
-                
-                # Emitir llamada
-                self.emit_call(func_name)
-                
-                # Retornar resultado
-                result = self.new_temp()
-                self.emit_assign(result, "R")
-                return result
         
         # Casos simples: literales directos
         if text.isdigit():
@@ -402,7 +426,7 @@ class TACCodeGenerator(CompiscriptListener):
             return "0"
         
         if operand.isalnum():
-            return self.get_fp_slot_lazy(operand)
+            return self.get_variable_slot_lazy(operand)
         
         return "0"
     
@@ -418,38 +442,6 @@ class TACCodeGenerator(CompiscriptListener):
             left_child = children[0]
             op_child = children[1]
             right_child = children[2]
-            
-            
-            # Verificar si es una llamada a función: func_name ( args )
-            if (hasattr(left_child, 'getText') and 
-                hasattr(op_child, 'getText') and op_child.getText() == '(' and
-                hasattr(right_child, 'getText') and right_child.getText() == ')'):
-                # Es una llamada a función sin argumentos
-                func_name = left_child.getText()
-                self.emit_call(func_name)
-                result = self.new_temp()
-                self.emit_assign(result, "R")
-                return result
-            
-            # Verificar si es una llamada a función con argumentos: func_name ( arg )
-            if (hasattr(left_child, 'getText') and 
-                hasattr(op_child, 'getText') and op_child.getText() == '('):
-                # Es una llamada a función con argumentos
-                func_name = left_child.getText()
-                # Evaluar el argumento
-                arg_result = self.visit_expression(right_child)
-                if self.emit_params:
-                    self.emit_param(arg_result)
-                self.emit_call(func_name)
-                result = self.new_temp()
-                self.emit_assign(result, "R")
-                return result
-            
-            # Verificar si es una expresión con paréntesis: ( arg )
-            if (hasattr(left_child, 'getText') and left_child.getText() == '(' and
-                hasattr(right_child, 'getText') and right_child.getText() == ')'):
-                # Es una expresión con paréntesis, evaluar el contenido
-                return self.visit_expression(op_child)
             
             # Si el operador es un token terminal, obtener texto
             if hasattr(op_child, 'getText'):
@@ -469,16 +461,6 @@ class TACCodeGenerator(CompiscriptListener):
         elif len(children) == 2:
             op_child = children[0]
             operand_child = children[1]
-            
-            # Verificar si es una llamada a función: func_name ( args )
-            if (hasattr(op_child, 'getText') and op_child.getText() == '(' and
-                hasattr(operand_child, 'getText') and operand_child.getText() == ')'):
-                # Es una llamada a función sin argumentos
-                func_name = op_child.getText() if hasattr(op_child, 'getText') else str(op_child)
-                self.emit_call(func_name)
-                result = self.new_temp()
-                self.emit_assign(result, "R")
-                return result
             
             op_text = op_child.getText() if hasattr(op_child, 'getText') else str(op_child)
             operand_result = self.visit_expression(operand_child) if hasattr(operand_child, 'getText') else self._evaluate_simple_operand(str(operand_child))
@@ -748,7 +730,7 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        var_slot = self.get_fp_slot_lazy(var_name)  # Reservar slot cuando se use
+        var_slot = self.get_variable_slot_lazy(var_name)  # Reservar slot cuando se use
         
         # Verificar si expression() devuelve una lista o un contexto único
         expr = ctx.expression()
@@ -814,10 +796,10 @@ class TACCodeGenerator(CompiscriptListener):
         if not ctx.expression():
             return
         
-        # Generar labels con el mismo contador para mantener consistencia
-        loop_label = f"STARTWHILE_{self.label_counter}"
-        true_label = f"LABEL_TRUE_{self.label_counter}"
-        end_label = f"ENDWHILE_{self.label_counter}"
+        # Generar labels siguiendo el formato de la imagen
+        loop_label = self.new_label("STARTWHILE")
+        true_label = self.new_label("LABEL_TRUE")  
+        end_label = self.new_label("ENDWHILE")
         
         # Emitir label de inicio de loop
         self.emit_label(loop_label)
@@ -844,7 +826,7 @@ class TACCodeGenerator(CompiscriptListener):
         
         loop_label, end_label = self.loop_labels.pop()
         
-        # Saltar de vuelta al inicio del while
+        # Saltar de vuelta al inicio
         self.emit_goto(loop_label)
         
         # Emitir label de salida
