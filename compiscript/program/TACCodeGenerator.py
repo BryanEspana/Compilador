@@ -313,7 +313,7 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Variables simples (sin operaciones)
         if text.isalnum() and not text.isdigit():
-            return self.get_fp_slot(text)
+            return self.get_variable_slot_lazy(text)
         
         # Analizar expresiones más complejas
         ctx_type = type(ctx).__name__
@@ -331,7 +331,7 @@ class TACCodeGenerator(CompiscriptListener):
         # Variables (identificadores)
         if hasattr(ctx, 'Identifier') and ctx.Identifier():
             var_name = ctx.Identifier().getText()
-            return self.get_fp_slot(var_name)
+            return self.get_variable_slot_lazy(var_name)
         
         # Expresiones con children (más robusto)
         if hasattr(ctx, 'children') and ctx.children:
@@ -358,7 +358,7 @@ class TACCodeGenerator(CompiscriptListener):
         return "0"  # Fallback
     
     def _parse_binary_expression(self, text: str) -> str:
-        """Parsea expresiones binarias simples desde texto"""
+        """Parsea expresiones binarias simples desde texto - ORDEN DE PRECEDENCIA CORRECTO"""
         if not text:
             return None
         
@@ -388,26 +388,73 @@ class TACCodeGenerator(CompiscriptListener):
                 self.emit_assign(result, "R")
                 return result
         
-        # Operadores en orden de precedencia (de menor a mayor)
-        operators = ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']
+        # Operadores en orden de MENOR a MAYOR precedencia
+        # Los operadores de menor precedencia se evalúan ÚLTIMO (de derecha a izquierda en parsing)
+        operators_by_precedence = [
+            ['||'],           # OR lógico - menor precedencia  
+            ['&&'],           # AND lógico
+            ['==', '!='],     # Igualdad
+            ['<', '<=', '>', '>='], # Relacionales
+            ['+', '-'],       # Suma/resta
+            ['*', '/', '%']   # Multiplicación/división - MAYOR precedencia
+        ]
         
-        for op in operators:
-            if op in text and not (text.startswith('"') and text.endswith('"')):
-                parts = text.split(op, 1)  # Solo el primer split
-                if len(parts) == 2:
-                    left = parts[0].strip()
-                    right = parts[1].strip()
-                    
-                    # Evaluar recursivamente
-                    left_result = self._evaluate_simple_operand(left)
-                    right_result = self._evaluate_simple_operand(right)
-                    
-                    # Generar código TAC
-                    result = self.new_temp()
-                    self.emit_binary_op(result, left_result, op, right_result)
-                    return result
+        # Buscar operadores de MENOR a MAYOR precedencia
+        # Encontrar el operador de menor precedencia para dividir por ahí
+        for operator_group in operators_by_precedence:
+            # Buscar el último operador de este grupo (de derecha a izquierda)
+            best_split = None
+            best_op = None
+            
+            for op in operator_group:
+                if op in text and not (text.startswith('"') and text.endswith('"')):
+                    # Encontrar la última ocurrencia de este operador
+                    index = text.rfind(op)
+                    if index > 0:  # Debe haber algo antes del operador
+                        left_part = text[:index].strip()
+                        right_part = text[index + len(op):].strip()
+                        if left_part and right_part:  # Ambas partes deben ser válidas
+                            best_split = (left_part, right_part)
+                            best_op = op
+                            break
+            
+            if best_split:
+                left, right = best_split
+                
+                # Evaluar recursivamente con precedencia correcta
+                left_result = self._parse_expression_with_precedence(left)
+                right_result = self._parse_expression_with_precedence(right)
+                
+                # Generar código TAC
+                result = self.new_temp()
+                self.emit_binary_op(result, left_result, best_op, right_result)
+                return result
         
         return None
+    
+    def _parse_expression_with_precedence(self, expr: str) -> str:
+        """Parser recursivo que respeta precedencia de operadores"""
+        expr = expr.strip()
+        
+        # Casos base: literales y variables
+        if expr.isdigit():
+            return expr
+        elif expr.startswith('"') and expr.endswith('"'):
+            return expr
+        elif expr == "true":
+            return "1"
+        elif expr == "false":
+            return "0"
+        elif expr.isalnum():
+            return self.get_variable_slot_lazy(expr)
+        
+        # Intentar parsear como expresión binaria
+        result = self._parse_binary_expression(expr)
+        if result:
+            return result
+        
+        # Fallback
+        return self._evaluate_simple_operand(expr)
     
     def _evaluate_simple_operand(self, operand: str) -> str:
         """Evalúa un operando simple"""
@@ -431,56 +478,62 @@ class TACCodeGenerator(CompiscriptListener):
         return "0"
     
     def _evaluate_from_children(self, ctx) -> str:
-        """Evalúa expresión desde los children del contexto"""
+        """Evalúa expresión desde los children del contexto - evita recursión infinita"""
         if not hasattr(ctx, 'children') or not ctx.children:
             return "0"
         
+        # Obtener el texto completo de la expresión y usar el parser textual 
+        # en lugar de recursión infinita por el AST
+        full_text = ctx.getText()
+        
+        # Si es una expresión simple (variable, literal), devolverla directamente
+        if full_text.isdigit():
+            return full_text
+        elif full_text.startswith('"') and full_text.endswith('"'):
+            return full_text
+        elif full_text == "true":
+            return "1"
+        elif full_text == "false":
+            return "0"
+        elif full_text.isalnum():
+            return self.get_variable_slot_lazy(full_text)
+        
+        # Para expresiones complejas, usar el parser textual que respeta precedencia
+        result = self._parse_binary_expression(full_text)
+        if result:
+            return result
+        
+        # Fallback: revisar children manualmente sin recursión infinita
         children = ctx.children
         
         # Caso con 3 children: operando1 operador operando2
         if len(children) == 3:
             left_child = children[0]
-            op_child = children[1]
+            op_child = children[1] 
             right_child = children[2]
             
-            # Si el operador es un token terminal, obtener texto
+            # Obtener operador
             if hasattr(op_child, 'getText'):
                 op_text = op_child.getText()
             else:
                 op_text = str(op_child)
             
-            # Evaluar operandos recursivamente
-            left_result = self.visit_expression(left_child) if hasattr(left_child, 'getText') else self._evaluate_simple_operand(str(left_child))
-            right_result = self.visit_expression(right_child) if hasattr(right_child, 'getText') else self._evaluate_simple_operand(str(right_child))
+            # Evaluar operandos SIN recursión infinita
+            left_text = left_child.getText() if hasattr(left_child, 'getText') else str(left_child)
+            right_text = right_child.getText() if hasattr(right_child, 'getText') else str(right_child)
+            
+            left_result = self._evaluate_simple_operand(left_text)
+            right_result = self._evaluate_simple_operand(right_text)
             
             result = self.new_temp()
             self.emit_binary_op(result, left_result, op_text, right_result)
             return result
         
-        # Caso con 2 children: operador unario + operando
-        elif len(children) == 2:
-            op_child = children[0]
-            operand_child = children[1]
-            
-            op_text = op_child.getText() if hasattr(op_child, 'getText') else str(op_child)
-            operand_result = self.visit_expression(operand_child) if hasattr(operand_child, 'getText') else self._evaluate_simple_operand(str(operand_child))
-            
-            result = self.new_temp()
-            self.emit_unary_op(result, op_text, operand_result)
-            return result
-        
-        # Caso con 1 child: evaluar el child
+        # Caso con 1 child: evaluar directamente
         elif len(children) == 1:
             child = children[0]
-            if hasattr(child, 'getText'):
-                child_text = child.getText()
-                # Si es un contexto complejo, evaluarlo recursivamente
-                if hasattr(child, 'children'):
-                    return self.visit_expression(child)
-                else:
-                    return self._evaluate_simple_operand(child_text)
-            else:
-                return self._evaluate_simple_operand(str(child))
+            child_text = child.getText() if hasattr(child, 'getText') else str(child)
+            return self._evaluate_simple_operand(child_text)
         
         return "0"
     
@@ -641,11 +694,11 @@ class TACCodeGenerator(CompiscriptListener):
         if hasattr(ctx, 'primaryAtom') and ctx.primaryAtom():
             if hasattr(ctx.primaryAtom(), 'Identifier'):
                 var_name = ctx.primaryAtom().Identifier().getText()
-                return self.get_fp_slot(var_name)
+                return self.get_variable_slot_lazy(var_name)
         
         if hasattr(ctx, 'Identifier') and ctx.Identifier():
             var_name = ctx.Identifier().getText()
-            return self.get_fp_slot(var_name)
+            return self.get_variable_slot_lazy(var_name)
         
         return "0"
     
