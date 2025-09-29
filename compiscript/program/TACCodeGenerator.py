@@ -36,6 +36,14 @@ class TACCodeGenerator(CompiscriptListener):
         self.fp_counter = 0
         self.emit_params = emit_params
         
+        # Contadores específicos para diferentes tipos de labels
+        self.while_counter = 0
+        self.if_counter = 0
+        
+        # Sistema de indentación para mejor legibilidad
+        self.indent_level = 0
+        self.use_indentation = True
+        
         # Stack para gestionar contextos
         self.current_function = None
         self.function_stack: List[str] = []
@@ -130,9 +138,29 @@ class TACCodeGenerator(CompiscriptListener):
         return self.get_variable_slot(var_name, "integer")
     
     def emit(self, instruction: str):
-        """Emite una instrucción TAC"""
+        """Emite una instrucción TAC con indentación automática"""
         if instruction.strip():  # No líneas en blanco
-            self.instructions.append(instruction)
+            if self.use_indentation and self.current_function:
+                # Solo indentar si estamos dentro de una función
+                # Labels no se indentan, el resto sí (con 1 tab)
+                if instruction.endswith(':') or instruction.startswith('//') or instruction.startswith('FUNCTION') or instruction.startswith('END FUNCTION'):
+                    # Labels, comentarios y declaraciones de función van sin indentación
+                    self.instructions.append(instruction)
+                else:
+                    # Instrucciones regulares se indentan con 1 tab dentro de funciones
+                    self.instructions.append(f"\t{instruction}")
+            else:
+                self.instructions.append(instruction)
+    
+    def indent_in(self):
+        """Aumenta el nivel de indentación"""
+        if self.use_indentation:
+            self.indent_level += 1
+    
+    def indent_out(self):
+        """Disminuye el nivel de indentación"""
+        if self.use_indentation and self.indent_level > 0:
+            self.indent_level -= 1
     
     def emit_label(self, label: str):
         """Emite un label"""
@@ -229,14 +257,18 @@ class TACCodeGenerator(CompiscriptListener):
                     self.scope_variables[current_scope][param_name] = param_offset
         
         self.emit(f"FUNCTION {func_name}:")
+        # Indentar el contenido de la función
+        self.indent_in()
     
     def exitFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
         """Salida de declaración de función"""
         if self.current_function:
-            # Asegurar que hay un RETURN al final
-            if not self.instructions or not self.instructions[-1].strip().startswith("RETURN"):
-                self.emit("RETURN")
+            # NO agregar RETURN automático - solo si está explícito en el código
+            # Comentado: if not self.instructions or not self.instructions[-1].strip().startswith("RETURN"):
+            #     self.emit("RETURN")
             
+            # Des-indentar antes del END FUNCTION
+            self.indent_out()
             self.emit(f"END FUNCTION {self.current_function}")
             
             # Salir del ámbito de función
@@ -408,7 +440,12 @@ class TACCodeGenerator(CompiscriptListener):
             
             for op in operator_group:
                 if op in text and not (text.startswith('"') and text.endswith('"')):
-                    # Encontrar la última ocurrencia de este operador
+                    # Encontrar la última ocurrencia de este operador, evitando <= cuando buscamos <
+                    if op == '<' and '<=' in text:
+                        continue  # Evitar confusión con <=
+                    if op == '>' and '>=' in text:
+                        continue  # Evitar confusión con >=
+                    
                     index = text.rfind(op)
                     if index > 0:  # Debe haber algo antes del operador
                         left_part = text[:index].strip()
@@ -802,87 +839,133 @@ class TACCodeGenerator(CompiscriptListener):
     # ==================== CONTROL FLOW ====================
     
     def enterIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
-        """Statement if"""
+        """Statement if - Formato correcto:
+        t := eval(cond)
+        IF t > 0 GOTO IF_TRUE_k
+        GOTO IF_FALSE_k
+        IF_TRUE_k:
+          ...
+          GOTO IF_END_k
+        IF_FALSE_k:
+          ...
+        IF_END_k:
+        """
         if not ctx.expression():
             return
         
-        # Evaluar condición
+        # Usar ID único para este if
+        if_id = self.if_counter
+        self.if_counter += 1
+        
+        # Generar labels con el mismo ID
+        true_label = f"IF_TRUE_{if_id}"
+        false_label = f"IF_FALSE_{if_id}"
+        end_label = f"IF_END_{if_id}"
+        
+        # t := eval(cond)
         condition = self.visit_expression(ctx.expression())
+        condition_temp = self.new_temp()
+        self.emit_assign(condition_temp, condition)
         
-        # Generar labels
-        else_label = self.new_label("ELSE")
-        end_label = self.new_label("ENDIF")
+        # IF t > 0 GOTO IF_TRUE_k
+        self.emit(f"IF {condition_temp} > 0 GOTO {true_label}")
         
-        # IF condition > 0 GOTO else_label (saltar si falso)
-        # Invertir la lógica: si condition <= 0, saltar a else
-        temp_condition = self.new_temp()
-        self.emit_assign(temp_condition, condition)
+        # GOTO IF_FALSE_k
+        self.emit(f"GOTO {false_label}")
         
-        # Emitir salto condicional invertido
-        self.emit(f"IF {temp_condition} <= 0 GOTO {else_label}")
+        # IF_TRUE_k:
+        self.emit_label(true_label)
         
-        # Guardar labels para usar en exit
-        self.loop_labels.append((else_label, end_label))
+        # Indentar el contenido del if
+        self.indent_in()
+        
+        # Guardar labels para exitIfStatement
+        self.loop_labels.append((true_label, false_label, end_label))
     
     def exitIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
         """Salida de if statement"""
         if not self.loop_labels:
             return
         
-        else_label, end_label = self.loop_labels.pop()
+        true_label, false_label, end_label = self.loop_labels.pop()
+        
+        # Des-indentar antes de los labels finales
+        self.indent_out()
         
         # Verificar si hay bloque else
-        if ctx.block() and len(ctx.block()) > 1:  # Hay else
-            self.emit_goto(end_label)
-            self.emit_label(else_label)
-            # El bloque else se procesa automáticamente
-        else:
-            # No hay else, solo emitir el label
-            self.emit_label(else_label)
+        has_else = ctx.block() and len(ctx.block()) > 1
         
-        # Al final emitir end_label solo si hay else
-        if ctx.block() and len(ctx.block()) > 1:
+        if has_else:
+            # GOTO IF_END_k (saltar del bloque then)
+            self.emit(f"GOTO {end_label}")
+            
+            # IF_FALSE_k: (inicio del bloque else)
+            self.emit_label(false_label)
+            
+            # Indentar el contenido del else
+            self.indent_in()
+            # El bloque else se procesa automáticamente
+            # (se des-indentará automáticamente al final)
+            self.indent_out()
+            
+            # IF_END_k: (final)
             self.emit_label(end_label)
+        else:
+            # No hay else, IF_FALSE_k es el final
+            self.emit_label(false_label)
     
     def enterWhileStatement(self, ctx: CompiscriptParser.WhileStatementContext):
-        """Statement while"""
+        """Statement while - Formato correcto:
+        STARTWHILE_k:
+          t := eval(cond)
+          IF t > 0 GOTO LABEL_TRUE_k  
+          GOTO ENDWHILE_k
+        LABEL_TRUE_k:
+          emit(body)
+          GOTO STARTWHILE_k
+        ENDWHILE_k:
+        """
         if not ctx.expression():
             return
         
-        # Generar labels siguiendo el formato de la imagen
-        loop_label = self.new_label("STARTWHILE")
-        true_label = self.new_label("LABEL_TRUE")  
-        end_label = self.new_label("ENDWHILE")
+        # Usar ID único para este while
+        while_id = self.while_counter
+        self.while_counter += 1
         
-        # Emitir label de inicio de loop
-        self.emit_label(loop_label)
+        # Generar labels con el mismo ID
+        start_label = f"STARTWHILE_{while_id}"
+        true_label = f"LABEL_TRUE_{while_id}"
+        end_label = f"ENDWHILE_{while_id}"
         
-        # Evaluar condición
+        # STARTWHILE_k:
+        self.emit_label(start_label)
+        
+        # t := eval(cond)
         condition = self.visit_expression(ctx.expression())
         
-        # IF condition > 0 GOTO true_label (entrar al cuerpo si verdadero)
+        # IF t > 0 GOTO LABEL_TRUE_k (usar directamente el temporal de la expresión)
         self.emit(f"IF {condition} > 0 GOTO {true_label}")
         
-        # Si la condición es falsa, saltar al final
+        # GOTO ENDWHILE_k  
         self.emit(f"GOTO {end_label}")
         
-        # Label para el cuerpo del while
+        # LABEL_TRUE_k:
         self.emit_label(true_label)
         
-        # Guardar labels
-        self.loop_labels.append((loop_label, end_label))
+        # Guardar labels para exitWhileStatement
+        self.loop_labels.append((start_label, end_label))
     
     def exitWhileStatement(self, ctx: CompiscriptParser.WhileStatementContext):
         """Salida de while statement"""
         if not self.loop_labels:
             return
         
-        loop_label, end_label = self.loop_labels.pop()
+        start_label, end_label = self.loop_labels.pop()
         
-        # Saltar de vuelta al inicio
-        self.emit_goto(loop_label)
+        # GOTO STARTWHILE_k (volver al inicio del loop)
+        self.emit(f"GOTO {start_label}")
         
-        # Emitir label de salida
+        # ENDWHILE_k:
         self.emit_label(end_label)
     
     def enterReturnStatement(self, ctx: CompiscriptParser.ReturnStatementContext):

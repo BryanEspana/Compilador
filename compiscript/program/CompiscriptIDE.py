@@ -101,7 +101,7 @@ class CompiscriptIDE:
         ttk.Button(toolbar, text="Compile (F5)", command=self.compile_code).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(5, 0))
-        ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.RIGHT)
+        ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.LEFT, padx=(5, 0))
 
         # Status label
         self.status_var = tk.StringVar(value="Ready")
