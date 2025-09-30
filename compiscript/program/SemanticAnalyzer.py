@@ -857,13 +857,25 @@ class SemanticAnalyzer(CompiscriptListener):
             elif debug_enabled:
                 print(f"Function {func_name} not found in symbol table")
     
+    def _copy_expression_errors(self):
+        """Copy errors from ExpressionEvaluator to SemanticAnalyzer"""
+        if hasattr(self.expression_evaluator, 'errors') and self.expression_evaluator.errors:
+            # Copy new errors that haven't been added yet
+            for error in self.expression_evaluator.errors:
+                if error not in self.errors:
+                    self.errors.append(error)
+            # Clear expression evaluator errors to avoid duplicates
+            self.expression_evaluator.errors.clear()
+    
     def enterExpressionStatement(self, ctx: CompiscriptParser.ExpressionStatementContext):
         """Handle expression statements"""
         if ctx.expression():
             # First validate function calls manually
             self._validate_function_calls_in_expression(ctx.expression())
-            # Then evaluate expression for type checking
+            # Then evaluate expression for type checking and undefined variable detection
             self.expression_evaluator.evaluate_expression(ctx.expression())
+            # Copy any new errors from expression evaluator
+            self._copy_expression_errors()
     
     def enterPrintStatement(self, ctx: CompiscriptParser.PrintStatementContext):
         """Handle print statements"""
