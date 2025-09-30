@@ -71,6 +71,11 @@ class TACCodeGenerator(CompiscriptListener):
         # Resultados de expresiones para el visitor pattern
         self.expression_results: Dict[int, str] = {}
         
+        # Información de clases y sus campos
+        self.class_fields: Dict[str, Dict[str, int]] = {}  # class_name -> {field_name -> offset}
+        self.current_class = None
+        self.current_field_offset = 0
+        
         # Control para evitar procesamiento automático de bloques
         self._skip_automatic_processing = False
         
@@ -122,6 +127,24 @@ class TACCodeGenerator(CompiscriptListener):
         }
         return type_sizes.get(var_type, 4)  # default integer = 4 bytes
     
+    def _get_field_offset(self, field_name: str) -> int:
+        """Obtiene el offset de un campo de clase (por bytes: 0, 4, 8, ...)"""
+        if self.current_class and self.current_class in self.class_fields:
+            return self.class_fields[self.current_class].get(field_name, 0)
+        # Si no se encuentra, asumir que es el primer campo
+        return 0
+    
+    def _register_field(self, class_name: str, field_name: str, field_type: str = "integer"):
+        """Registra un campo de clase con su offset"""
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+            self.current_field_offset = 0
+        
+        # Asignar offset y avanzar según tamaño del tipo
+        field_size = self._get_type_size(field_type)
+        self.class_fields[class_name][field_name] = self.current_field_offset
+        self.current_field_offset += field_size
+    
     def get_variable_slot(self, var_name: str, var_type: str = "integer") -> str:
         """Obtiene el slot para una variable (busca en ámbito local primero, luego global)"""
         # Buscar primero en ámbito local actual
@@ -135,6 +158,14 @@ class TACCodeGenerator(CompiscriptListener):
         if var_name in self.local_variables and current_scope != "global":
             offset = self.local_variables[var_name]
             return f"fp[{offset}]"
+        
+        # EN MÉTODOS DE CLASE: Si la variable es un campo de clase, usar acceso via this
+        if (hasattr(self, 'current_class') and self.current_class and 
+            self.current_class in self.class_fields and 
+            var_name in self.class_fields[self.current_class]):
+            # Es un campo de la clase actual, acceder via this (fp[-1])
+            field_offset = self.class_fields[self.current_class][var_name]
+            return f"fp[-1][{field_offset}]"
         
         # Buscar en variables globales
         if var_name in self.global_variables:
@@ -241,6 +272,20 @@ class TACCodeGenerator(CompiscriptListener):
             return
         elif expr_text == "false":
             self.emit_goto(false_label) 
+            return
+        
+        # Operador de negación (!)
+        if expr_text.startswith("!"):
+            # Para negación, intercambiar las etiquetas true y false
+            inner_expr = expr_text[1:].strip()
+            # Remover paréntesis externos si los hay
+            if inner_expr.startswith("(") and inner_expr.endswith(")"):
+                inner_expr = inner_expr[1:-1].strip()
+            
+            # Crear contexto para la expresión interna
+            inner_ctx = self._parse_expression_context(inner_expr)
+            # Evaluar con etiquetas intercambiadas
+            self.evaluate_boolean_expression(inner_ctx, false_label, true_label)
             return
             
         # Variables booleanas
@@ -395,17 +440,29 @@ class TACCodeGenerator(CompiscriptListener):
         self.current_local_offset = 0
         self.local_variables.clear()
         
-        # Los slots de parámetros serán negativos para diferenciarlos
+        # Reiniciar contador de temporales por función
+        self.temp_counter = 0
         
-        # Asignar slots para parámetros (negativos para parámetros)
+        # Verificar si es un método de clase (tiene contexto de clase)
+        is_class_method = hasattr(self, 'current_class') and self.current_class
+        
+        # Asignar slots para parámetros usando fp[-k] donde k empieza en 1
+        param_slot = -1  # this = fp[-1] para métodos de clase
+        
+        # Para métodos de clase, el primer parámetro es 'this'
+        if is_class_method:
+            self.local_variables['this'] = param_slot
+            self.scope_variables[current_scope]['this'] = param_slot
+            param_slot -= 1  # Siguiente parámetro será fp[-2]
+        
+        # Asignar slots para parámetros explícitos
         if ctx.parameters() and ctx.parameters().parameter():
-            for i, param in enumerate(ctx.parameters().parameter()):
+            for param in ctx.parameters().parameter():
                 if param.Identifier():
                     param_name = param.Identifier().getText()
-                    # Usar slots negativos para parámetros
-                    param_offset = -(i + 1)
-                    self.local_variables[param_name] = param_offset
-                    self.scope_variables[current_scope][param_name] = param_offset
+                    self.local_variables[param_name] = param_slot
+                    self.scope_variables[current_scope][param_name] = param_slot
+                    param_slot -= 1  # fp[-2], fp[-3], fp[-4], etc.
         
         self.emit(f"FUNCTION {func_name}:")
         # Indentar el contenido de la función
@@ -414,9 +471,17 @@ class TACCodeGenerator(CompiscriptListener):
     def exitFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
         """Salida de declaración de función"""
         if self.current_function:
-            # NO agregar RETURN automático - solo si está explícito en el código
-            # Comentado: if not self.instructions or not self.instructions[-1].strip().startswith("RETURN"):
-            #     self.emit("RETURN")
+            # Agregar RETURN automático para funciones void si no hay return explícito
+            if not self.instructions or not self.instructions[-1].strip().startswith("RETURN"):
+                # Determinar el tipo de retorno
+                return_type = "void"  # default
+                if hasattr(ctx, 'typeAnnotation') and ctx.typeAnnotation():
+                    if hasattr(ctx.typeAnnotation(), 'type_') and ctx.typeAnnotation().type_():
+                        return_type = ctx.typeAnnotation().type_().getText()
+                
+                # Para funciones void, NO emitir RETURN automático según especificación README
+                if return_type != "void":
+                    self.emit("RETURN")
             
             # Des-indentar antes del END FUNCTION
             self.indent_out()
@@ -600,8 +665,10 @@ class TACCodeGenerator(CompiscriptListener):
         if obj_name == "this":
             return self._handle_this_access(field_name)
         else:
+            # Para objetos no-this, determinar clase y offset
             obj_slot = self.get_variable_slot_lazy(obj_name)
-            return self._handle_field_access(obj_slot, field_name)
+            field_offset = self._get_field_offset_for_object(obj_name, field_name)
+            return f"{obj_slot}[{field_offset}]"
     
     def _parse_method_call(self, text: str, ctx) -> str:
         """Parsea llamadas a métodos: obj.method(args) o super.method(args)"""
@@ -641,6 +708,16 @@ class TACCodeGenerator(CompiscriptListener):
         if not text:
             return None
         
+        text = text.strip()
+
+        # Manejar paréntesis anidados primero
+        if text.startswith('(') and text.endswith(')'):
+            # Verificar que los paréntesis están balanceados y cubren toda la expresión
+            inner_text = text[1:-1].strip()
+            if self._are_parentheses_balanced(inner_text):
+                # Es una expresión completamente entre paréntesis
+                return self._parse_binary_expression(inner_text)
+        
         # Verificar si hay paréntesis para llamadas a función
         if "(" in text and ")" in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
             # Posible llamada a función
@@ -649,18 +726,40 @@ class TACCodeGenerator(CompiscriptListener):
                 func_name = func_match[0].strip()
                 args_text = func_match[1].rstrip(')')
                 
-                # Contar argumentos
-                num_args = 0
-                if args_text.strip():
-                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
-                    num_args = len(args)
-                    for arg in args:
-                        arg_result = self._evaluate_simple_operand(arg)
-                        if self.emit_params:
+                # CORREGIR: Verificar si es llamada a método (obj.method)
+                if "." in func_name:
+                    dot_pos = func_name.find(".")
+                    obj_name = func_name[:dot_pos]
+                    method_name = func_name[dot_pos+1:]
+                    
+                    # Emitir 'this' como primer parámetro
+                    obj_slot = self.get_variable_slot_lazy(obj_name)
+                    self.emit(f"PARAM {obj_slot}")
+                    
+                    # Emitir argumentos explícitos
+                    num_args = 1  # Contar 'this'
+                    if args_text.strip():
+                        args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                        num_args += len(args)
+                        for arg in args:
+                            arg_result = self._evaluate_simple_operand(arg)
                             self.emit(f"PARAM {arg_result}")
-                
-                # Emitir llamada con formato CALL func,num_args
-                self.emit(f"CALL {func_name},{num_args}")
+                    
+                    # Emitir llamada al método (sin prefijo del objeto)
+                    self.emit(f"CALL {method_name},{num_args}")
+                else:
+                    # Llamada a función normal
+                    num_args = 0
+                    if args_text.strip():
+                        args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                        num_args = len(args)
+                        for arg in args:
+                            arg_result = self._evaluate_simple_operand(arg)
+                            if self.emit_params:
+                                self.emit(f"PARAM {arg_result}")
+                    
+                    # Emitir llamada con formato CALL func,num_args
+                    self.emit(f"CALL {func_name},{num_args}")
                 
                 # Retornar resultado
                 result = self.new_temp()
@@ -668,7 +767,6 @@ class TACCodeGenerator(CompiscriptListener):
                 return result
         
         # Operadores en orden de MENOR a MAYOR precedencia
-        # Los operadores de menor precedencia se evalúan ÚLTIMO (de derecha a izquierda en parsing)
         operators_by_precedence = [
             ['||'],           # OR lógico - menor precedencia  
             ['&&'],           # AND lógico
@@ -678,32 +776,12 @@ class TACCodeGenerator(CompiscriptListener):
             ['*', '/', '%']   # Multiplicación/división - MAYOR precedencia
         ]
         
-        # Buscar operadores de MENOR a MAYOR precedencia
-        # Encontrar el operador de menor precedencia para dividir por ahí
+        # NUEVO: Buscar operadores respetando paréntesis
         for operator_group in operators_by_precedence:
-            # Buscar el último operador de este grupo (de derecha a izquierda)
-            best_split = None
-            best_op = None
-            
-            for op in operator_group:
-                if op in text and not (text.startswith('"') and text.endswith('"')):
-                    # Encontrar la última ocurrencia de este operador, evitando <= cuando buscamos <
-                    if op == '<' and '<=' in text:
-                        continue  # Evitar confusión con <=
-                    if op == '>' and '>=' in text:
-                        continue  # Evitar confusión con >=
-                    
-                    index = text.rfind(op)
-                    if index > 0:  # Debe haber algo antes del operador
-                        left_part = text[:index].strip()
-                        right_part = text[index + len(op):].strip()
-                        if left_part and right_part:  # Ambas partes deben ser válidas
-                            best_split = (left_part, right_part)
-                            best_op = op
-                            break
+            best_split = self._find_operator_outside_parentheses(text, operator_group)
             
             if best_split:
-                left, right = best_split
+                left, right, op = best_split
                 
                 # Evaluar recursivamente con precedencia correcta
                 left_result = self._parse_expression_with_precedence(left)
@@ -711,8 +789,53 @@ class TACCodeGenerator(CompiscriptListener):
                 
                 # Generar código TAC
                 result = self.new_temp()
-                self.emit_binary_op(result, left_result, best_op, right_result)
+                self.emit_binary_op(result, left_result, op, right_result)
                 return result
+        
+        return None
+    
+    def _are_parentheses_balanced(self, text: str) -> bool:
+        """Verifica si los paréntesis están balanceados"""
+        count = 0
+        for char in text:
+            if char == '(':
+                count += 1
+            elif char == ')':
+                count -= 1
+                if count < 0:
+                    return False
+        return count == 0
+    
+    def _find_operator_outside_parentheses(self, text: str, operators: list) -> tuple:
+        """Encuentra operadores fuera de paréntesis, de derecha a izquierda"""
+        paren_depth = 0
+        
+        # Buscar de derecha a izquierda para respetar asociatividad
+        for i in range(len(text) - 1, -1, -1):
+            char = text[i]
+            
+            if char == ')':
+                paren_depth += 1
+            elif char == '(':
+                paren_depth -= 1
+            elif paren_depth == 0:  # Solo considerar operadores fuera de paréntesis
+                # Buscar operadores en la posición actual
+                for op in operators:
+                    if text[i:i+len(op)] == op:
+                        # Verificar que no es parte de <= o >=
+                        if op == '<' and i+1 < len(text) and text[i+1] == '=':
+                            continue
+                        if op == '>' and i+1 < len(text) and text[i+1] == '=':
+                            continue
+                        if op == '=' and i > 0 and text[i-1] in ['<', '>', '!', '=']:
+                            continue
+                        
+                        # Verificar que hay contenido antes y después
+                        if i > 0 and i + len(op) < len(text):
+                            left_part = text[:i].strip()
+                            right_part = text[i + len(op):].strip()
+                            if left_part and right_part:
+                                return (left_part, right_part, op)
         
         return None
     
@@ -729,6 +852,9 @@ class TACCodeGenerator(CompiscriptListener):
             return "1"
         elif expr == "false":
             return "0"
+        elif "." in expr and not any(op in expr for op in ['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=']):
+            # Es un acceso a campo sin operadores
+            return self._parse_field_access(expr)
         elif expr.isalnum():
             return self.get_variable_slot_lazy(expr)
         
@@ -744,6 +870,18 @@ class TACCodeGenerator(CompiscriptListener):
         """Evalúa un operando simple"""
         operand = operand.strip()
         
+        # NUEVO: Remover paréntesis externos no balanceados
+        while operand.startswith('(') and not operand.endswith(')'):
+            operand = operand[1:].strip()
+        while operand.endswith(')') and not operand.startswith('('):
+            operand = operand[:-1].strip()
+        
+        # Manejar paréntesis balanceados
+        if operand.startswith('(') and operand.endswith(')'):
+            inner = operand[1:-1].strip()
+            if self._are_parentheses_balanced(inner):
+                return self._parse_expression_with_precedence(inner)
+        
         if operand.isdigit():
             return operand
         
@@ -756,8 +894,20 @@ class TACCodeGenerator(CompiscriptListener):
         if operand == "false":
             return "0"
         
+        # Manejar acceso a campos obj.field
+        if "." in operand:
+            field_access = self._parse_field_access(operand)
+            if field_access:
+                return field_access
+        
+        # CORREGIR: Variables deben resolverse a sus slots correctos
         if operand.isalnum():
             return self.get_variable_slot_lazy(operand)
+        
+        # Si es una expresión compleja, usar parser recursivo
+        complex_result = self._parse_binary_expression(operand)
+        if complex_result:
+            return complex_result
         
         return "0"
     
@@ -1038,24 +1188,46 @@ class TACCodeGenerator(CompiscriptListener):
                 self.visit_expression(ctx.expression())
     
     def _process_function_call_statement(self, call_text: str):
-        """Procesa un statement que es una llamada a función"""
+        """Procesa un statement que es una llamada a función o método"""
         if "(" in call_text and ")" in call_text:
             func_match = call_text.split('(', 1)
             if len(func_match) == 2:
                 func_name = func_match[0].strip()
                 args_text = func_match[1].rstrip(')')
                 
-                # Emitir parámetros
-                num_args = 0
-                if args_text.strip():
-                    args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
-                    num_args = len(args)
-                    for arg in args:
-                        arg_result = self._evaluate_simple_operand(arg)
-                        self.emit(f"PARAM {arg_result}")
-                
-                # Emitir llamada
-                self.emit(f"CALL {func_name},{num_args}")
+                # Verificar si es llamada a método (obj.method)
+                if "." in func_name:
+                    dot_pos = func_name.find(".")
+                    obj_name = func_name[:dot_pos]
+                    method_name = func_name[dot_pos+1:]
+                    
+                    # Emitir 'this' como primer parámetro
+                    obj_slot = self.get_variable_slot_lazy(obj_name)
+                    self.emit(f"PARAM {obj_slot}")
+                    
+                    # Emitir argumentos explícitos
+                    num_args = 1  # Contar 'this'
+                    if args_text.strip():
+                        args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                        num_args += len(args)
+                        for arg in args:
+                            arg_result = self._evaluate_simple_operand(arg)
+                            self.emit(f"PARAM {arg_result}")
+                    
+                    # Emitir llamada al método (sin prefijo del objeto)
+                    self.emit(f"CALL {method_name},{num_args}")
+                else:
+                    # Llamada a función normal
+                    num_args = 0
+                    if args_text.strip():
+                        args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
+                        num_args = len(args)
+                        for arg in args:
+                            arg_result = self._evaluate_simple_operand(arg)
+                            self.emit(f"PARAM {arg_result}")
+                    
+                    # Emitir llamada
+                    self.emit(f"CALL {func_name},{num_args}")
                 
                 # Asignar resultado a temporal (aunque no se use)
                 result = self.new_temp()
@@ -1095,7 +1267,6 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         var_name = ctx.Identifier().getText()
-        var_slot = self.get_variable_slot_lazy(var_name)
         
         # Verificar si expression() devuelve una lista o un contexto único
         expr = ctx.expression()
@@ -1109,7 +1280,17 @@ class TACCodeGenerator(CompiscriptListener):
             else:
                 # Es un contexto único
                 rhs = self.visit_expression(expr)
-            self.emit_assign(var_slot, rhs)
+            
+            # CORREGIR: Si es un campo de clase en método de clase, usar fp[-1][offset]
+            if (hasattr(self, 'current_class') and self.current_class and 
+                self.current_class in self.class_fields and 
+                var_name in self.class_fields[self.current_class]):
+                field_offset = self.class_fields[self.current_class][var_name]
+                self.emit(f"fp[-1][{field_offset}] := {rhs}")
+            else:
+                # Asignación normal
+                var_slot = self.get_variable_slot_lazy(var_name)
+                self.emit_assign(var_slot, rhs)
     
     def _mark_context_as_processed(self, ctx):
         """Marca un contexto y todos sus descendientes como ya procesados"""
@@ -1180,7 +1361,8 @@ class TACCodeGenerator(CompiscriptListener):
                         value_result = self._evaluate_simple_operand(value_part)
                         
                         if obj_name == "this":
-                            self.emit(f'this."{field_name}" = {value_result}')
+                            field_offset = self._get_field_offset(field_name)
+                            self.emit(f"fp[-1][{field_offset}] := {value_result}")
                             return
         
         # Asignación simple
@@ -1243,11 +1425,15 @@ class TACCodeGenerator(CompiscriptListener):
         has_else = ctx.block() and len(ctx.block()) > 1
         
         # CORTO CIRCUITO: evalúar B con B.true y B.false apropiados
-        if has_else:
-            # B.false = IF_FALSE_k (inicio del else)
+        # Para expresiones negadas, siempre generar IF_FALSE_k para claridad
+        expr_text = ctx.expression().getText()
+        is_negated = expr_text.strip().startswith('!')
+        
+        if has_else or is_negated:
+            # B.false = IF_FALSE_k (inicio del else o manejo de negación)
             self.evaluate_boolean_expression(ctx.expression(), true_label, false_label)
         else:
-            # B.false = IF_END_k (no hay else, salta al final)
+            # B.false = IF_END_k (no hay else ni negación, salta al final)
             self.evaluate_boolean_expression(ctx.expression(), true_label, end_label)
         
         # IF_TRUE_k: código del bloque THEN
@@ -1265,8 +1451,15 @@ class TACCodeGenerator(CompiscriptListener):
             
             # IF_END_k: continuación
             self.emit_label(end_label)
+        elif is_negated:
+            # Sin else pero con negación: generar IF_FALSE_k que salte a IF_END_k
+            self.emit_label(false_label)
+            self.emit_goto(end_label)
+            
+            # IF_END_k: continuación
+            self.emit_label(end_label)
         else:
-            # Sin else: IF_END_k ya es el destino de B.false
+            # Sin else ni negación: IF_END_k ya es el destino de B.false
             self.emit_label(end_label)
         
         # Marcar contexto como procesado para evitar duplicación
@@ -1357,6 +1550,21 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Manejar herencia si existe
         self.current_class = class_name
+        self.current_field_offset = 0  # Resetear offset de campos
+        
+        # Registrar campos de la clase manualmente
+        if hasattr(ctx, 'children') and ctx.children:
+            for child in ctx.children:
+                # Buscar declaraciones de variables directamente en los hijos
+                if hasattr(child, 'variableDeclaration') and child.variableDeclaration():
+                    var_decl = child.variableDeclaration()
+                    if var_decl and var_decl.Identifier():
+                        field_name = var_decl.Identifier().getText()
+                        field_type = "integer"  # default
+                        if var_decl.typeAnnotation() and var_decl.typeAnnotation().type_():
+                            field_type = var_decl.typeAnnotation().type_().getText()
+                        self._register_field(class_name, field_name, field_type)
+        
         if len(ctx.Identifier()) > 1:
             # Hay herencia: class Child extends Parent
             parent_class = ctx.Identifier(1).getText()
@@ -1421,10 +1629,11 @@ class TACCodeGenerator(CompiscriptListener):
             self.scope_depth -= 1
     
     def _handle_this_access(self, field_name: str) -> str:
-        """Maneja acceso a this.campo"""
-        # En TAC, this.campo se traduce a acceso a campo de objeto
-        # this está en fp[0], el campo se accesa como FIELD_ACCESS
-        return f'this."{field_name}"'
+        """Maneja acceso a this.campo usando offsets correctos"""
+        # Calcular offset del campo (por bytes: 0, 4, 8, 12, ...)
+        field_offset = self._get_field_offset(field_name)
+        # this está en fp[-1], acceder al campo usando offset
+        return f"fp[-1][{field_offset}]"
     
     def _handle_new_expression(self, class_name: str, args: list) -> str:
         """Maneja creación de objetos new ClassName(args)"""
@@ -1447,19 +1656,20 @@ class TACCodeGenerator(CompiscriptListener):
     
     def _handle_field_access(self, obj: str, field: str) -> str:
         """Maneja acceso a campos: obj.field"""
-        result = self.new_temp()
-        self.emit(f'{result} = {obj}."{field}"')
-        return result
+        # Determinar offset del campo
+        field_offset = self._get_field_offset_for_object_by_slot(obj, field)
+        return f"{obj}[{field_offset}]"
     
     def _handle_method_call(self, obj: str, method: str, args: list) -> str:
         """Maneja llamadas a métodos: obj.method(args)"""
         # Emitir parámetros: primero 'obj' (this), luego argumentos
-        self.emit_param(obj)
+        self.emit(f"PARAM {obj}")
         for arg in args:
-            self.emit_param(arg)
+            self.emit(f"PARAM {arg}")
             
-        # Llamar método directamente (sin prefijo del objeto)
-        self.emit_call(method, len(args) + 1)
+        # Llamar método directamente usando nombre del método
+        total_params = len(args) + 1  # this + argumentos
+        self.emit(f"CALL {method},{total_params}")
         
         # Resultado en temporal
         result = self.new_temp()
@@ -1485,3 +1695,60 @@ class TACCodeGenerator(CompiscriptListener):
         result = self.new_temp()
         self.emit_assign(result, "R")
         return result
+    
+    def _get_field_offset(self, field_name: str) -> int:
+        """Obtiene el offset de un campo de clase (por bytes: 0, 4, 8, ...)"""
+        if self.current_class and self.current_class in self.class_fields:
+            return self.class_fields[self.current_class].get(field_name, 0)
+        # Si no se encuentra, asumir que es el primer campo
+        return 0
+    
+    def _register_field(self, class_name: str, field_name: str, field_type: str = "integer"):
+        """Registra un campo de clase con su offset"""
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+            self.current_field_offset = 0
+        
+        # Asignar offset y avanzar según tamaño del tipo
+        field_size = self._get_type_size(field_type)
+        self.class_fields[class_name][field_name] = self.current_field_offset
+        self.current_field_offset += field_size
+    
+    def _register_class_fields(self, class_name: str, class_body):
+        """Registra todos los campos de una clase con sus offsets"""
+        if class_name not in self.class_fields:
+            self.class_fields[class_name] = {}
+            
+        field_offset = 0
+        
+        # Buscar declaraciones de variables en el cuerpo de la clase
+        if hasattr(class_body, 'children'):
+            for child in class_body.children:
+                if hasattr(child, 'variableDeclaration') and child.variableDeclaration():
+                    var_decl = child.variableDeclaration()
+                    if var_decl.Identifier():
+                        field_name = var_decl.Identifier().getText()
+                        
+                        # Determinar tipo del campo
+                        field_type = "integer"  # default
+                        if var_decl.typeAnnotation() and var_decl.typeAnnotation().type_():
+                            field_type = var_decl.typeAnnotation().type_().getText()
+                        
+                        # Registrar campo con offset
+                        self.class_fields[class_name][field_name] = field_offset
+                        field_offset += self._get_type_size(field_type)
+    
+    def _get_field_offset_for_object(self, obj_name: str, field_name: str) -> int:
+        """Obtiene el offset de un campo para un objeto específico"""
+        # Buscar en todas las clases registradas el campo
+        for class_name, fields in self.class_fields.items():
+            if field_name in fields:
+                offset = fields[field_name]
+                return offset
+        
+        return 0
+    
+    def _get_field_offset_for_object_by_slot(self, obj_slot: str, field_name: str) -> int:
+        """Obtiene el offset de un campo basado en el slot del objeto"""
+        # Por simplicidad, usar la clase actual
+        return self._get_field_offset_for_object("", field_name)
