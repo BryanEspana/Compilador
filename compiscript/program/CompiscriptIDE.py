@@ -70,6 +70,8 @@ class CompiscriptIDE:
         compile_menu.add_command(label="Clear Output", command=self.clear_output)
         compile_menu.add_separator()
         compile_menu.add_command(label="View Symbol Table", command=self.show_symbol_table)
+        compile_menu.add_command(label="View Intermediate Code", command=self.show_intermediate_code)
+
 
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -99,6 +101,7 @@ class CompiscriptIDE:
         ttk.Button(toolbar, text="Compile (F5)", command=self.compile_code).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT)
         ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.LEFT, padx=(5, 0))
 
         # Status label
         self.status_var = tk.StringVar(value="Ready")
@@ -402,6 +405,11 @@ class CompiscriptIDE:
             
             try:
                 walker.walk(semantic_analyzer, tree)
+                
+                # Generate intermediate code if semantic analysis is successful
+                if not semantic_analyzer.has_errors():
+                    semantic_analyzer.generate_intermediate_code(tree)
+                    
             except UnicodeDecodeError as e:
                 # Handle encoding issues
                 encoding_error = f"Encoding error: {str(e)}. Please ensure the file is saved in UTF-8 format."
@@ -469,6 +477,30 @@ class CompiscriptIDE:
 
         # Insertar el texto de la tabla de símbolos
         text_area.insert(tk.END, table_text)
+        text_area.config(state=tk.DISABLED)
+
+    def show_intermediate_code(self):
+        """Muestra el código intermedio en una nueva ventana"""
+        if not self.last_analyzer:
+            messagebox.showinfo("Intermediate Code", "(No se ha compilado todavía)")
+            return
+
+        intermediate_code = self.last_analyzer.get_intermediate_code()
+        if not intermediate_code or intermediate_code.strip() == "(No intermediate code generated)":
+            messagebox.showinfo("Intermediate Code", "(No se generó código intermedio)")
+            return
+
+        # Crear una nueva ventana para mostrar el código intermedio
+        intermediate_code_window = tk.Toplevel(self.root)
+        intermediate_code_window.title("Código Intermedio (TAC)")
+        intermediate_code_window.geometry("800x600")
+
+        # Crear un área de texto desplazable para mostrar el código
+        text_area = scrolledtext.ScrolledText(intermediate_code_window, wrap=tk.NONE, font=('Consolas', 10))
+        text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Insertar el texto del código intermedio
+        text_area.insert(tk.END, intermediate_code)
         text_area.config(state=tk.DISABLED)
     
     def clear_output(self):

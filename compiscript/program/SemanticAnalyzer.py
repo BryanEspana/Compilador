@@ -7,6 +7,7 @@ from CompiscriptParser import CompiscriptParser
 from CompiscriptListener import CompiscriptListener
 from SymbolTable import SymbolTable, Symbol, FunctionSymbol, ClassSymbol, SymbolType, Scope
 from ExpressionEvaluator import ExpressionEvaluator
+from TACCodeGenerator import TACCodeGenerator
 from typing import Dict, List, Optional, Any, Union
 import sys
 
@@ -21,6 +22,10 @@ class SemanticAnalyzer(CompiscriptListener):
         self.in_loop = 0  # Counter for nested loops
         self.errors: List[str] = []
         self.in_try_catch = False  # Track if we're in a try-catch block
+        
+        # TAC Code Generation
+        self.tac_generator = TACCodeGenerator(emit_params=True)
+        self.intermediate_code: str = ""
         
         # Type compatibility matrix
         self.compatible_types = {
@@ -133,6 +138,8 @@ class SemanticAnalyzer(CompiscriptListener):
     
     def exitProgram(self, ctx: CompiscriptParser.ProgramContext):
         """Exit program and check for main function"""
+        # Validate function calls now that all functions are defined
+        self._validate_function_calls()
         # Optional: Check if main function exists
         pass
     
@@ -740,11 +747,135 @@ class SemanticAnalyzer(CompiscriptListener):
             if condition_type != SymbolType.BOOLEAN and condition_type != SymbolType.NULL:
                 self.add_error(ctx, f"If condition must be boolean, got {condition_type.value}")
     
+    def _validate_function_calls_in_expression(self, ctx):
+        """Recursively validate function calls in expressions"""
+        if not ctx:
+            return
+        
+        # Debug output
+        debug_enabled = getattr(self, 'debug', False)
+        if debug_enabled:
+            print(f"Checking context: {type(ctx).__name__}")
+        
+        # Check specifically for LeftHandSideContext which contains function calls
+        if type(ctx).__name__ == 'LeftHandSideContext':
+            if debug_enabled:
+                print(f"Found LeftHandSideContext: {ctx.getText()}")
+            
+            # Look for IdentifierExprContext and CallExprContext pattern
+            identifier_ctx = None
+            call_ctx = None
+            
+            if hasattr(ctx, 'children') and ctx.children:
+                for child in ctx.children:
+                    if type(child).__name__ == 'IdentifierExprContext':
+                        identifier_ctx = child
+                    elif type(child).__name__ == 'CallExprContext':
+                        call_ctx = child
+            
+            if identifier_ctx and call_ctx:
+                # This is a function call
+                func_name = identifier_ctx.getText()
+                
+                # Store function call information for later validation
+                if not hasattr(self, 'function_calls'):
+                    self.function_calls = []
+                
+                # Count actual parameters in call
+                actual_params = 0
+                if hasattr(call_ctx, 'children') and call_ctx.children:
+                    # Look for arguments context between '(' and ')'
+                    for call_child in call_ctx.children:
+                        if type(call_child).__name__ == 'ArgumentsContext':
+                            # Count expression contexts in arguments
+                            if hasattr(call_child, 'children'):
+                                expr_count = 0
+                                for arg_child in call_child.children:
+                                    if type(arg_child).__name__ == 'ExpressionContext':
+                                        expr_count += 1
+                                actual_params = expr_count
+                
+                self.function_calls.append({
+                    'name': func_name,
+                    'actual_params': actual_params
+                })
+                
+                if debug_enabled:
+                    print(f"Stored function call: {func_name} with {actual_params} parameters")
+                
+                # Skip the symbol lookup here since functions might not be processed yet
+        
+        # Recursively check children
+        if hasattr(ctx, 'children') and ctx.children:
+            for child in ctx.children:
+                if hasattr(child, 'getText'):  # Only check parse tree nodes
+                    self._validate_function_calls_in_expression(child)
+    
+    def _validate_function_calls(self):
+        """Validate all collected function calls after all functions are defined"""
+        if not hasattr(self, 'function_calls'):
+            return
+        
+        debug_enabled = getattr(self, 'debug', False)
+        
+        for call_info in self.function_calls:
+            func_name = call_info['name']
+            actual_params = call_info['actual_params']
+            
+            # Look up the function in symbol table
+            func_symbol = self.symbol_table.lookup(func_name)
+            
+            if func_symbol and isinstance(func_symbol, FunctionSymbol):
+                expected_params = len(func_symbol.parameters)
+                
+                if debug_enabled:
+                    print(f"Validating function {func_name}: expected {expected_params}, actual {actual_params}")
+                
+                # Validate parameter count
+                if expected_params != actual_params:
+                    if expected_params > 0:
+                        first_param = func_symbol.parameters[0]
+                        # Handle parameter structure - could be tuple (name, type) or object
+                        if isinstance(first_param, tuple):
+                            param_type = first_param[1]  # Type is second element
+                        else:
+                            param_type = getattr(first_param, 'type', 'unknown')
+                        
+                        # Convert SymbolType enum to string if needed
+                        if hasattr(param_type, 'name'):
+                            param_type_str = param_type.name.lower()
+                        else:
+                            param_type_str = str(param_type).lower()
+                        
+                        error_msg = f"Error función {func_name} se esperaba parametro tipo {param_type_str} para la funcion {func_name}"
+                    else:
+                        error_msg = f"Error función {func_name} no acepta parámetros"
+                    
+                    self.errors.append(error_msg)
+                    if debug_enabled:
+                        print(f"Parameter mismatch: {error_msg}")
+            elif debug_enabled:
+                print(f"Function {func_name} not found in symbol table")
+    
+    def _copy_expression_errors(self):
+        """Copy errors from ExpressionEvaluator to SemanticAnalyzer"""
+        if hasattr(self.expression_evaluator, 'errors') and self.expression_evaluator.errors:
+            # Copy new errors that haven't been added yet
+            for error in self.expression_evaluator.errors:
+                if error not in self.errors:
+                    self.errors.append(error)
+            # Clear expression evaluator errors to avoid duplicates
+            self.expression_evaluator.errors.clear()
+    
     def enterExpressionStatement(self, ctx: CompiscriptParser.ExpressionStatementContext):
         """Handle expression statements"""
         if ctx.expression():
-            # Evaluate expression for type checking
+            # First validate function calls manually
+            self._validate_function_calls_in_expression(ctx.expression())
+            # Then evaluate expression for type checking and undefined variable detection
             self.expression_evaluator.evaluate_expression(ctx.expression())
+            # Copy any new errors from expression evaluator
+            self._copy_expression_errors()
     
     def enterPrintStatement(self, ctx: CompiscriptParser.PrintStatementContext):
         """Handle print statements"""
@@ -783,3 +914,46 @@ class SemanticAnalyzer(CompiscriptListener):
         symbol = self.symbol_table.lookup(var_name)
         if symbol and not symbol.is_initialized and not symbol.is_constant:
             self.add_error(ctx, f"Variable '{var_name}' used before initialization")
+    
+    def generate_intermediate_code(self, tree):
+        """Generate TAC intermediate code if semantic analysis is successful"""
+        try:
+            from antlr4 import ParseTreeWalker
+            walker = ParseTreeWalker()
+            walker.walk(self.tac_generator, tree)
+            self.intermediate_code = self.tac_generator.get_tac_code()
+        except Exception as e:
+            self.intermediate_code = f"Error generating intermediate code: {str(e)}"
+    
+    def get_intermediate_code(self) -> str:
+        """Get the generated intermediate code"""
+        return self.intermediate_code if self.intermediate_code else "(No intermediate code generated)"
+    
+    def has_errors(self) -> bool:
+        """Check if there are semantic errors"""
+        return len(self.errors) > 0
+    
+    def get_errors(self) -> List[str]:
+        """Get all semantic errors"""
+        return self.errors.copy()
+    
+    def print_errors(self):
+        """Print all semantic errors"""
+        if self.errors:
+            print("Semantic Errors:")
+            for i, error in enumerate(self.errors, 1):
+                print(f"{i}. {error}")
+        else:
+            print("No semantic errors found.")
+    
+    def print_symbol_table(self):
+        """Print the symbol table"""
+        print("\n=== SYMBOL TABLE ===")
+        self.symbol_table.print_table()
+        print("====================")
+    
+    def print_intermediate_code(self):
+        """Print the intermediate code"""
+        print("\n=== INTERMEDIATE CODE ===")
+        print(self.get_intermediate_code())
+        print("==========================")
