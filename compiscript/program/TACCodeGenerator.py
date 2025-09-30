@@ -26,6 +26,12 @@ from CompiscriptListener import CompiscriptListener
 from typing import Dict, List, Optional, Any, Union
 import sys
 
+class BooleanExpression:
+    """Representa una expresión booleana con etiquetas de salto para corto circuito"""
+    def __init__(self, true_label: str = None, false_label: str = None):
+        self.true_label = true_label    # B.true - salto cuando es verdadero
+        self.false_label = false_label  # B.false - salto cuando es falso
+
 class TACCodeGenerator(CompiscriptListener):
     """Generates Three-Address Code from AST following exact specification"""
     
@@ -64,6 +70,12 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Resultados de expresiones para el visitor pattern
         self.expression_results: Dict[int, str] = {}
+        
+        # Control para evitar procesamiento automático de bloques
+        self._skip_automatic_processing = False
+        
+        # Set de contextos ya procesados para evitar duplicaciones
+        self._processed_contexts = set()
     
     def new_temp(self) -> str:
         """Genera un nuevo temporal: t0, t1, t2, ..."""
@@ -205,6 +217,145 @@ class TACCodeGenerator(CompiscriptListener):
     def get_tac_code(self) -> str:
         """Obtiene el código TAC generado como string"""
         return "\n".join(self.instructions)
+    
+    # ==================== SHORT CIRCUIT EVALUATION ====================
+    
+    def evaluate_boolean_expression(self, ctx, true_label: str, false_label: str):
+        """Evalúa expresión booleana con corto circuito - NO materializa valor, solo genera saltos
+        
+        Siguiendo las reglas:
+        - B.true: label a donde saltar si es verdadero
+        - B.false: label a donde saltar si es falso
+        - Para operadores && y ||: implementa corto circuito real
+        """
+        if not ctx:
+            # Expresión vacía = falsa
+            self.emit_goto(false_label)
+            return
+            
+        expr_text = ctx.getText()
+        
+        # Casos base: literales booleanos
+        if expr_text == "true":
+            self.emit_goto(true_label)
+            return
+        elif expr_text == "false":
+            self.emit_goto(false_label) 
+            return
+            
+        # Variables booleanas
+        if expr_text.isalnum() and not expr_text.isdigit():
+            var_slot = self.get_variable_slot_lazy(expr_text)
+            self.emit_if_goto(var_slot, true_label)
+            self.emit_goto(false_label)
+            return
+            
+        # Operadores lógicos con corto circuito
+        if "||" in expr_text:
+            self._evaluate_or_expression(ctx, true_label, false_label)
+        elif "&&" in expr_text:
+            self._evaluate_and_expression(ctx, true_label, false_label)
+        elif any(op in expr_text for op in ["==", "!=", "<=", ">=", "<", ">"]):
+            self._evaluate_relational_expression(ctx, true_label, false_label)
+        else:
+            # Expresión compleja - evaluar y usar resultado
+            result = self.visit_expression(ctx)
+            self.emit_if_goto(result, true_label)
+            self.emit_goto(false_label)
+    
+    def _evaluate_or_expression(self, ctx, true_label: str, false_label: str):
+        """Implementa A || B con corto circuito:
+        Si A es verdadero, salta directo a true_label
+        Si A es falso, evalúa B
+        """
+        # Encontrar operandos
+        left_expr, right_expr = self._split_logical_expression(ctx.getText(), "||")
+        
+        if left_expr and right_expr:
+            # Crear label intermedio para continuar con B si A es falso
+            continue_label = self.new_label("OR_CONTINUE")
+            
+            # Evaluar operando izquierdo
+            # Si es verdadero, salta directo a true_label (corto circuito)
+            # Si es falso, continúa evaluando B
+            left_ctx = self._parse_expression_context(left_expr)
+            self.evaluate_boolean_expression(left_ctx, true_label, continue_label)
+            
+            # Label para continuar: A era falso, evaluar B
+            self.emit_label(continue_label)
+            right_ctx = self._parse_expression_context(right_expr)
+            self.evaluate_boolean_expression(right_ctx, true_label, false_label)
+    
+    def _evaluate_and_expression(self, ctx, true_label: str, false_label: str):
+        """Implementa A && B con corto circuito:
+        Si A es falso, salta directo a false_label
+        Si A es verdadero, evalúa B
+        """
+        # Encontrar operandos  
+        left_expr, right_expr = self._split_logical_expression(ctx.getText(), "&&")
+        
+        if left_expr and right_expr:
+            # Crear label intermedio para cuando A es verdadero
+            intermediate_label = self.new_label("AND_CONTINUE")
+            
+            # Evaluar operando izquierdo
+            # Si es falso, salta directo a false_label sin evaluar B
+            left_ctx = self._parse_expression_context(left_expr)
+            self.evaluate_boolean_expression(left_ctx, intermediate_label, false_label)
+            
+            # Label intermedio: A es verdadero, evaluar B
+            self.emit_label(intermediate_label)
+            right_ctx = self._parse_expression_context(right_expr)
+            self.evaluate_boolean_expression(right_ctx, true_label, false_label)
+    
+    def _evaluate_relational_expression(self, ctx, true_label: str, false_label: str):
+        """Evalúa expresión relacional (<, <=, >, >=, ==, !=) con saltos directos"""
+        expr_text = ctx.getText()
+        
+        # Buscar el operador relacional
+        for op in ["<=", ">=", "==", "!=", "<", ">"]:
+            if op in expr_text:
+                parts = expr_text.split(op, 1)
+                if len(parts) == 2:
+                    left = parts[0].strip()
+                    right = parts[1].strip()
+                    
+                    left_result = self._evaluate_simple_operand(left)
+                    right_result = self._evaluate_simple_operand(right)
+                    
+                    # Generar temporal para comparación
+                    temp = self.new_temp()
+                    self.emit_binary_op(temp, left_result, op, right_result)
+                    
+                    # Saltar según resultado (verdadero si > 0)
+                    self.emit_if_goto(temp, true_label)
+                    self.emit_goto(false_label)
+                    return
+        
+        # Fallback: evaluar como expresión normal
+        result = self.visit_expression(ctx)
+        self.emit_if_goto(result, true_label)
+        self.emit_goto(false_label)
+    
+    def _split_logical_expression(self, expr_text: str, operator: str) -> tuple:
+        """Divide una expresión lógica en operandos izquierdo y derecho"""
+        # Buscar la última ocurrencia del operador (precedencia correcta)
+        index = expr_text.rfind(operator)
+        if index > 0:
+            left = expr_text[:index].strip()
+            right = expr_text[index + len(operator):].strip()
+            return (left, right)
+        return (None, None)
+    
+    def _parse_expression_context(self, expr_text: str):
+        """Crea un contexto mock para una expresión desde texto"""
+        # Por simplicidad, crear un objeto mock con getText()
+        class MockContext:
+            def __init__(self, text):
+                self._text = text
+            def getText(self):
+                return self._text
+        return MockContext(expr_text)
     
     def print_tac_code(self):
         """Imprime el código TAC generado"""
@@ -376,6 +527,11 @@ class TACCodeGenerator(CompiscriptListener):
         if result:
             return result
         
+        # Manejo de expresiones OOP
+        result = self._handle_oop_expressions(ctx, text)
+        if result:
+            return result
+        
         # Fallback para expresiones anidadas
         for attr in ['expression', 'primary', 'literalExpr', 'leftHandSide']:
             if hasattr(ctx, attr):
@@ -388,6 +544,97 @@ class TACCodeGenerator(CompiscriptListener):
                     return self.visit_expression(child)
         
         return "0"  # Fallback
+    
+    def _handle_oop_expressions(self, ctx, text: str) -> str:
+        """Maneja expresiones orientadas a objetos"""
+        
+        # 1. Expresiones new ClassName(args)
+        if text.startswith("new") and "(" in text:
+            return self._parse_new_expression(text)
+        
+        # 2. Acceso a campos: obj.field o this.field
+        if "." in text and not "(" in text:  # Acceso a campo (no método)
+            return self._parse_field_access(text)
+        
+        # 3. Llamadas a métodos: obj.method(args) o super.method(args)
+        if "." in text and "(" in text:
+            return self._parse_method_call(text, ctx)
+        
+        # 4. Referencia a 'this'
+        if text == "this":
+            return self.get_variable_slot_lazy('this')
+        
+        return None
+    
+    def _parse_new_expression(self, text: str) -> str:
+        """Parsea expresión new ClassName(args)"""
+        # new Persona("Juan", 25)
+        parts = text.split("new", 1)
+        if len(parts) < 2:
+            return None
+            
+        remaining = parts[1].strip()
+        if "(" not in remaining:
+            return None
+            
+        class_name = remaining.split("(", 1)[0].strip()
+        args_part = remaining.split("(", 1)[1].rstrip(")")
+        
+        # Evaluar argumentos
+        args = []
+        if args_part.strip():
+            arg_texts = [arg.strip() for arg in args_part.split(",")]
+            for arg_text in arg_texts:
+                args.append(self._evaluate_simple_operand(arg_text))
+        
+        return self._handle_new_expression(class_name, args)
+    
+    def _parse_field_access(self, text: str) -> str:
+        """Parsea acceso a campos: obj.field o this.field"""
+        parts = text.split(".", 1)
+        if len(parts) != 2:
+            return None
+            
+        obj_name, field_name = parts
+        
+        if obj_name == "this":
+            return self._handle_this_access(field_name)
+        else:
+            obj_slot = self.get_variable_slot_lazy(obj_name)
+            return self._handle_field_access(obj_slot, field_name)
+    
+    def _parse_method_call(self, text: str, ctx) -> str:
+        """Parsea llamadas a métodos: obj.method(args) o super.method(args)"""
+        if "(" not in text or ")" not in text:
+            return None
+            
+        # obj.method(args)
+        dot_pos = text.find(".")
+        paren_pos = text.find("(")
+        
+        if dot_pos == -1 or paren_pos == -1 or dot_pos > paren_pos:
+            return None
+            
+        obj_part = text[:dot_pos]
+        method_part = text[dot_pos+1:paren_pos]
+        args_part = text[paren_pos+1:text.rfind(")")]
+        
+        # Evaluar argumentos
+        args = []
+        if args_part.strip():
+            arg_texts = [arg.strip() for arg in args_part.split(",")]
+            for arg_text in arg_texts:
+                args.append(self._evaluate_simple_operand(arg_text))
+        
+        if obj_part == "super":
+            return self._handle_super_call(method_part, args)
+        elif obj_part == "this":
+            # this.method() - usar this como objeto
+            this_slot = self.get_variable_slot_lazy('this')
+            return self._handle_method_call(this_slot, method_part, args)
+        else:
+            obj_slot = self.get_variable_slot_lazy(obj_part)
+            return self._handle_method_call(obj_slot, method_part, args)
     
     def _parse_binary_expression(self, text: str) -> str:
         """Parsea expresiones binarias simples desde texto - ORDEN DE PRECEDENCIA CORRECTO"""
@@ -815,12 +1062,40 @@ class TACCodeGenerator(CompiscriptListener):
                 self.emit_assign(result, "R")
     
     def enterAssignment(self, ctx: CompiscriptParser.AssignmentContext):
-        """Asignación directa"""
+        """Asignación directa o a campo de objeto"""
+        # Verificar si ya fue procesado manualmente
+        if self._is_already_processed(ctx):
+            return
+        
+        # Manejar tanto assignment simple como property assignment
+        if hasattr(ctx, 'expression') and ctx.expression():
+            expressions = ctx.expression()
+            
+            # Caso 1: Asignación a propiedad obj.field = value
+            if len(expressions) >= 2:
+                # expression '.' Identifier '=' expression ';'
+                obj_expr = expressions[0]
+                value_expr = expressions[1]
+                field_name = ctx.Identifier().getText() if ctx.Identifier() else None
+                
+                if field_name:
+                    obj_result = self.visit_expression(obj_expr)
+                    value_result = self.visit_expression(value_expr)
+                    
+                    # Manejar this.field = value
+                    obj_text = obj_expr.getText() if hasattr(obj_expr, 'getText') else str(obj_expr)
+                    if obj_text == "this":
+                        self.emit(f'this."{field_name}" = {value_result}')
+                    else:
+                        self._handle_field_assignment(obj_result, field_name, value_result)
+                return
+        
+        # Caso 2: Asignación simple var = value
         if not ctx.Identifier():
             return
         
         var_name = ctx.Identifier().getText()
-        var_slot = self.get_variable_slot_lazy(var_name)  # Reservar slot cuando se use
+        var_slot = self.get_variable_slot_lazy(var_name)
         
         # Verificar si expression() devuelve una lista o un contexto único
         expr = ctx.expression()
@@ -836,83 +1111,171 @@ class TACCodeGenerator(CompiscriptListener):
                 rhs = self.visit_expression(expr)
             self.emit_assign(var_slot, rhs)
     
+    def _mark_context_as_processed(self, ctx):
+        """Marca un contexto y todos sus descendientes como ya procesados"""
+        self._processed_contexts.add(id(ctx))
+        
+        # Marcar recursivamente todos los hijos
+        if hasattr(ctx, 'children') and ctx.children:
+            for child in ctx.children:
+                if hasattr(child, 'children'):  # Es un contexto de parser
+                    self._mark_context_as_processed(child)
+    
+    def _is_already_processed(self, ctx):
+        """Verifica si un contexto ya fue procesado"""
+        return id(ctx) in self._processed_contexts
+    
+    def _process_block_statements(self, block_ctx):
+        """Procesa manualmente las declaraciones de un bloque"""
+        if not block_ctx or not hasattr(block_ctx, 'statement'):
+            return
+        
+        statements = block_ctx.statement()
+        if statements:
+            for stmt in statements:
+                self._process_statement(stmt)
+    
+    def _process_statement(self, stmt_ctx):
+        """Procesa manualmente una declaración individual"""
+        if not stmt_ctx:
+            return
+        
+        # Procesar diferentes tipos de declaraciones
+        if hasattr(stmt_ctx, 'assignment') and stmt_ctx.assignment():
+            self._process_assignment_manually(stmt_ctx.assignment())
+        elif hasattr(stmt_ctx, 'variableDeclaration') and stmt_ctx.variableDeclaration():
+            self.enterVariableDeclaration(stmt_ctx.variableDeclaration())
+        elif hasattr(stmt_ctx, 'expressionStatement') and stmt_ctx.expressionStatement():
+            self.enterExpressionStatement(stmt_ctx.expressionStatement())
+        elif hasattr(stmt_ctx, 'printStatement') and stmt_ctx.printStatement():
+            self.enterPrintStatement(stmt_ctx.printStatement())
+        elif hasattr(stmt_ctx, 'returnStatement') and stmt_ctx.returnStatement():
+            self.enterReturnStatement(stmt_ctx.returnStatement())
+        elif hasattr(stmt_ctx, 'ifStatement') and stmt_ctx.ifStatement():
+            self.enterIfStatement(stmt_ctx.ifStatement())
+        elif hasattr(stmt_ctx, 'whileStatement') and stmt_ctx.whileStatement():
+            self.enterWhileStatement(stmt_ctx.whileStatement())
+    
+    def _process_assignment_manually(self, assign_ctx):
+        """Procesa asignación manualmente (evita duplicados) - incluye asignaciones a campos"""
+        if not assign_ctx:
+            return
+            
+        # Detectar si es asignación a campo basándose en el texto
+        if hasattr(assign_ctx, 'getText'):
+            assign_text = assign_ctx.getText()
+            
+            # Buscar patrón obj.field = value
+            if "." in assign_text and "=" in assign_text:
+                # this.nombre = n; -> parsear manualmente
+                eq_pos = assign_text.find("=")
+                dot_pos = assign_text.find(".")
+                
+                if dot_pos < eq_pos:
+                    obj_field = assign_text[:eq_pos].strip()
+                    value_part = assign_text[eq_pos+1:].strip().rstrip(";")
+                    
+                    if "." in obj_field:
+                        obj_name, field_name = obj_field.split(".", 1)
+                        value_result = self._evaluate_simple_operand(value_part)
+                        
+                        if obj_name == "this":
+                            self.emit(f'this."{field_name}" = {value_result}')
+                            return
+        
+        # Asignación simple
+        if not assign_ctx.Identifier():
+            return
+        
+        var_name = assign_ctx.Identifier().getText()
+        var_slot = self.get_variable_slot_lazy(var_name)
+        
+        expr = assign_ctx.expression()
+        if expr:
+            if isinstance(expr, list):
+                if len(expr) > 0:
+                    rhs = self.visit_expression(expr[0])
+                else:
+                    rhs = "0"
+            else:
+                rhs = self.visit_expression(expr)
+            self.emit_assign(var_slot, rhs)
+
+    def enterBlock(self, ctx: CompiscriptParser.BlockContext):
+        """Evita procesamiento automático de bloques ya procesados"""
+        if self._is_already_processed(ctx):
+            return
+        # Permitir procesamiento normal para otros casos
+    
+    def exitBlock(self, ctx: CompiscriptParser.BlockContext):
+        """Salida de bloque - no hacer nada especial"""
+        pass
+
     # ==================== CONTROL FLOW ====================
     
     def enterIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
-        """Statement if - Formato correcto:
-        t := eval(cond)
-        IF t > 0 GOTO IF_TRUE_k
-        GOTO IF_FALSE_k
-        IF_TRUE_k:
-          ...
-          GOTO IF_END_k
-        IF_FALSE_k:
-          ...
-        IF_END_k:
+        """Statement if con CORTO CIRCUITO - Siguiendo S → if(B)S₁ [else S₂]:
+        
+        Formato con corto circuito:
+        B.true = IF_TRUE_k, B.false = IF_FALSE_k o IF_END_k
+        
+        Para if-else:
+        etiqueta(B.true) || código(S₁) || gen('goto' IF_END_k) ||
+        etiqueta(B.false) || código(S₂)
+        
+        Para if simple:
+        etiqueta(B.true) || código(S₁) 
+        B.false = IF_END_k = siguiente declaración
         """
         if not ctx.expression():
             return
         
-        # Usar ID único para este if
+        # Usar ID único para este if - sufijo numérico consistente
         if_id = self.if_counter
         self.if_counter += 1
         
-        # Generar labels con el mismo ID
+        # Generar labels con el mismo ID k
         true_label = f"IF_TRUE_{if_id}"
-        false_label = f"IF_FALSE_{if_id}"
+        false_label = f"IF_FALSE_{if_id}" 
         end_label = f"IF_END_{if_id}"
         
-        # t := eval(cond)
-        condition = self.visit_expression(ctx.expression())
-        condition_temp = self.new_temp()
-        self.emit_assign(condition_temp, condition)
-        
-        # IF t > 0 GOTO IF_TRUE_k
-        self.emit(f"IF {condition_temp} > 0 GOTO {true_label}")
-        
-        # GOTO IF_FALSE_k
-        self.emit(f"GOTO {false_label}")
-        
-        # IF_TRUE_k:
-        self.emit_label(true_label)
-        
-        # Indentar el contenido del if
-        self.indent_in()
-        
-        # Guardar labels para exitIfStatement
-        self.loop_labels.append((true_label, false_label, end_label))
-    
-    def exitIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
-        """Salida de if statement"""
-        if not self.loop_labels:
-            return
-        
-        true_label, false_label, end_label = self.loop_labels.pop()
-        
-        # Des-indentar antes de los labels finales
-        self.indent_out()
-        
-        # Verificar si hay bloque else
+        # Verificar si hay bloque ELSE
         has_else = ctx.block() and len(ctx.block()) > 1
         
+        # CORTO CIRCUITO: evalúar B con B.true y B.false apropiados
         if has_else:
-            # GOTO IF_END_k (saltar del bloque then)
-            self.emit(f"GOTO {end_label}")
+            # B.false = IF_FALSE_k (inicio del else)
+            self.evaluate_boolean_expression(ctx.expression(), true_label, false_label)
+        else:
+            # B.false = IF_END_k (no hay else, salta al final)
+            self.evaluate_boolean_expression(ctx.expression(), true_label, end_label)
+        
+        # IF_TRUE_k: código del bloque THEN
+        self.emit_label(true_label)
+        if ctx.block() and len(ctx.block()) > 0:
+            self._process_block_statements(ctx.block()[0])  # S₁
+        
+        if has_else:
+            # gen('goto' IF_END_k) - saltar el else
+            self.emit_goto(end_label)
             
-            # IF_FALSE_k: (inicio del bloque else)
+            # IF_FALSE_k: código del bloque ELSE  
             self.emit_label(false_label)
+            self._process_block_statements(ctx.block()[1])  # S₂
             
-            # Indentar el contenido del else
-            self.indent_in()
-            # El bloque else se procesa automáticamente
-            # (se des-indentará automáticamente al final)
-            self.indent_out()
-            
-            # IF_END_k: (final)
+            # IF_END_k: continuación
             self.emit_label(end_label)
         else:
-            # No hay else, IF_FALSE_k es el final
-            self.emit_label(false_label)
+            # Sin else: IF_END_k ya es el destino de B.false
+            self.emit_label(end_label)
+        
+        # Marcar contexto como procesado para evitar duplicación
+        self._mark_context_as_processed(ctx)
+    
+    def exitIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
+        """Salida de if statement - Ya se procesó todo manualmente en enterIfStatement"""
+        # No hacer nada - ya se procesó todo manualmente
+        pass
     
     def enterWhileStatement(self, ctx: CompiscriptParser.WhileStatementContext):
         """Statement while - Formato correcto:
@@ -982,3 +1345,143 @@ class TACCodeGenerator(CompiscriptListener):
             result = self.visit_expression(ctx.expression())
             # Para print, podemos usar una llamada especial o instrucción específica
             self.emit(f"PRINT {result}")
+    
+    # ==================== OBJECT-ORIENTED PROGRAMMING ====================
+    
+    def enterClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
+        """Declaración de clase"""
+        if not ctx.Identifier():
+            return
+            
+        class_name = ctx.Identifier(0).getText()  # Primer identificador es el nombre de clase
+        
+        # Manejar herencia si existe
+        self.current_class = class_name
+        if len(ctx.Identifier()) > 1:
+            # Hay herencia: class Child extends Parent
+            parent_class = ctx.Identifier(1).getText()
+            self.emit(f"// CLASS {class_name} extends {parent_class}")
+        else:
+            self.emit(f"// CLASS {class_name}")
+    
+    def exitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
+        """Salida de declaración de clase"""
+        if hasattr(self, 'current_class'):
+            self.emit(f"// END CLASS {self.current_class}")
+            self.current_class = None
+    
+    def enterInitMethod(self, ctx: CompiscriptParser.InitMethodContext):
+        """Método constructor init"""
+        if not hasattr(self, 'current_class') or not self.current_class:
+            return
+            
+        # Generar función constructora con nombre de clase
+        constructor_name = f"{self.current_class}_init"
+        self.current_function = constructor_name
+        self.function_stack.append(constructor_name)
+        self.scope_depth += 1
+        
+        # Entrar en nuevo ámbito de función
+        self.scope_stack.append(f"function_{constructor_name}")
+        current_scope = self.scope_stack[-1]
+        self.scope_variables[current_scope] = {}
+        
+        # Resetear contador local para esta función
+        self.current_local_offset = 4  # Reservar slot para 'this' en fp[0]
+        self.local_variables.clear()
+        
+        # Primer parámetro siempre es 'this'
+        self.local_variables['this'] = 0
+        self.scope_variables[current_scope]['this'] = 0
+        
+        # Asignar slots para parámetros (empezando desde fp[4])
+        if ctx.parameters() and ctx.parameters().parameter():
+            for i, param in enumerate(ctx.parameters().parameter()):
+                if param.Identifier():
+                    param_name = param.Identifier().getText()
+                    param_offset = (i + 1) * 4  # fp[4], fp[8], fp[12], etc.
+                    self.local_variables[param_name] = param_offset
+                    self.scope_variables[current_scope][param_name] = param_offset
+        
+        self.emit(f"FUNCTION init:")
+        self.indent_in()
+    
+    def exitInitMethod(self, ctx: CompiscriptParser.InitMethodContext):
+        """Salida de método constructor"""
+        if self.current_function:
+            self.indent_out()
+            self.emit(f"END FUNCTION init")
+            
+            # Salir del ámbito de función
+            if len(self.scope_stack) > 1:
+                self.scope_stack.pop()
+            
+            self.function_stack.pop()
+            self.current_function = self.function_stack[-1] if self.function_stack else None
+            self.scope_depth -= 1
+    
+    def _handle_this_access(self, field_name: str) -> str:
+        """Maneja acceso a this.campo"""
+        # En TAC, this.campo se traduce a acceso a campo de objeto
+        # this está en fp[0], el campo se accesa como FIELD_ACCESS
+        return f'this."{field_name}"'
+    
+    def _handle_new_expression(self, class_name: str, args: list) -> str:
+        """Maneja creación de objetos new ClassName(args)"""
+        # Crear objeto
+        result = self.new_temp()
+        self.emit(f"{result} = NEW {class_name}")
+        
+        # Llamar constructor con el objeto como primer parámetro
+        self.emit(f"PARAM {result}")  # this
+        for arg in args:
+            self.emit_param(arg)  # argumentos del constructor
+            
+        self.emit_call("init", len(args) + 1)  # Llamar init directamente
+        
+        return result
+    
+    def _handle_field_assignment(self, obj: str, field: str, value: str):
+        """Maneja asignación a campos: obj.field = value"""
+        self.emit(f'{obj}."{field}" = {value}')
+    
+    def _handle_field_access(self, obj: str, field: str) -> str:
+        """Maneja acceso a campos: obj.field"""
+        result = self.new_temp()
+        self.emit(f'{result} = {obj}."{field}"')
+        return result
+    
+    def _handle_method_call(self, obj: str, method: str, args: list) -> str:
+        """Maneja llamadas a métodos: obj.method(args)"""
+        # Emitir parámetros: primero 'obj' (this), luego argumentos
+        self.emit_param(obj)
+        for arg in args:
+            self.emit_param(arg)
+            
+        # Llamar método directamente (sin prefijo del objeto)
+        self.emit_call(method, len(args) + 1)
+        
+        # Resultado en temporal
+        result = self.new_temp()
+        self.emit_assign(result, "R")
+        return result
+    
+    def _handle_super_call(self, method: str, args: list) -> str:
+        """Maneja llamadas super.method(args)"""
+        # super.method() se traduce como llamada directa al método de la clase padre
+        # En este caso simplificado, llamamos directamente al método
+        
+        # Emitir 'this' como primer parámetro
+        this_slot = self.get_variable_slot_lazy('this')
+        self.emit_param(this_slot)
+        
+        # Emitir argumentos
+        for arg in args:
+            self.emit_param(arg)
+            
+        # Llamar método padre
+        self.emit_call(method, len(args) + 1)
+        
+        result = self.new_temp()
+        self.emit_assign(result, "R")
+        return result
