@@ -2,7 +2,6 @@
 Three-Address Code (TAC) Parser for Compiscript compiler
 """
 
-import re
 from typing import List, Optional, Tuple
 from TACInstruction import TACInstruction, TACOperation, TACGenerator
 
@@ -12,6 +11,143 @@ class TACParser:
     def __init__(self):
         self.instructions: List[TACInstruction] = []
         self.errors: List[str] = []
+    
+    def _is_identifier(self, s: str) -> bool:
+        """Check if string is a valid identifier (letters, digits, underscore)"""
+        if not s:
+            return False
+        if not (s[0].isalpha() or s[0] == '_'):
+            return False
+        return all(c.isalnum() or c == '_' for c in s)
+    
+    def _is_number(self, s: str) -> bool:
+        """Check if string is a number"""
+        if not s:
+            return False
+        try:
+            int(s)
+            return True
+        except ValueError:
+            return False
+    
+    def _split_whitespace(self, s: str) -> List[str]:
+        """Split string by whitespace and filter empty strings"""
+        return [part for part in s.split() if part]
+    
+    def _parse_pattern_if_condition(self, line: str, prefix: str) -> Optional[Tuple[str, str]]:
+        """Parse if_false/if_true pattern: 'prefix condition goto label'"""
+        if not line.startswith(prefix):
+            return None
+        
+        # Remove prefix and split by whitespace
+        rest = line[len(prefix):].strip()
+        parts = self._split_whitespace(rest)
+        
+        if len(parts) >= 3 and parts[1] == 'goto':
+            condition = parts[0]
+            label = parts[2]
+            if self._is_identifier(condition) and self._is_identifier(label):
+                return (condition, label)
+        return None
+    
+    def _parse_pattern_call(self, line: str) -> Optional[Tuple[str, str]]:
+        """Parse call pattern: 'call function_name, num_params'"""
+        if not line.startswith('call '):
+            return None
+        
+        rest = line[5:].strip()  # Remove 'call '
+        if ',' not in rest:
+            return None
+        
+        parts = rest.split(',', 1)
+        if len(parts) == 2:
+            function_name = parts[0].strip()
+            num_params = parts[1].strip()
+            if self._is_identifier(function_name) and self._is_number(num_params):
+                return (function_name, num_params)
+        return None
+    
+    def _parse_pattern_array_assign(self, line: str) -> Optional[Tuple[str, str, str]]:
+        """Parse array assignment: 'array[index] = value'"""
+        if '=' not in line:
+            return None
+        
+        parts = line.split('=', 1)
+        if len(parts) != 2:
+            return None
+        
+        left = parts[0].strip()
+        right = parts[1].strip()
+        
+        # Check for array[index] pattern
+        if '[' in left and ']' in left:
+            bracket_start = left.find('[')
+            bracket_end = left.find(']')
+            if bracket_start > 0 and bracket_end > bracket_start:
+                array = left[:bracket_start].strip()
+                index = left[bracket_start+1:bracket_end].strip()
+                if self._is_identifier(array) and self._is_identifier(index):
+                    return (array, index, right)
+        return None
+    
+    def _parse_pattern_object_assign(self, line: str) -> Optional[Tuple[str, str, str]]:
+        """Parse object assignment: 'object.property = value'"""
+        if '=' not in line:
+            return None
+        
+        parts = line.split('=', 1)
+        if len(parts) != 2:
+            return None
+        
+        left = parts[0].strip()
+        right = parts[1].strip()
+        
+        # Check for object.property pattern
+        if '.' in left:
+            dot_pos = left.find('.')
+            if dot_pos > 0 and dot_pos < len(left) - 1:
+                object_name = left[:dot_pos].strip()
+                property_name = left[dot_pos+1:].strip()
+                if self._is_identifier(object_name) and self._is_identifier(property_name):
+                    return (object_name, property_name, right)
+        return None
+    
+    def _parse_pattern_array_access(self, expression: str) -> Optional[Tuple[str, str]]:
+        """Parse array access: 'array[index]'"""
+        if '[' not in expression or ']' not in expression:
+            return None
+        
+        bracket_start = expression.find('[')
+        bracket_end = expression.find(']')
+        if bracket_start > 0 and bracket_end > bracket_start:
+            array = expression[:bracket_start].strip()
+            index = expression[bracket_start+1:bracket_end].strip()
+            if self._is_identifier(array) and self._is_identifier(index):
+                return (array, index)
+        return None
+    
+    def _parse_pattern_object_access(self, expression: str) -> Optional[Tuple[str, str]]:
+        """Parse object access: 'object.property'"""
+        if '.' not in expression:
+            return None
+        
+        dot_pos = expression.find('.')
+        if dot_pos > 0 and dot_pos < len(expression) - 1:
+            object_name = expression[:dot_pos].strip()
+            property_name = expression[dot_pos+1:].strip()
+            if self._is_identifier(object_name) and self._is_identifier(property_name):
+                return (object_name, property_name)
+        return None
+    
+    def _parse_pattern_new_object(self, expression: str) -> Optional[str]:
+        """Parse new object: 'new ClassName'"""
+        if not expression.startswith('new '):
+            return None
+        
+        class_name = expression[4:].strip()  # Remove 'new '
+        if self._is_identifier(class_name):
+            return class_name
+        return None
     
     def parse_line(self, line: str) -> Optional[TACInstruction]:
         """Parse a single line of TAC code"""
@@ -82,9 +218,9 @@ class TACParser:
     def _parse_if_false(self, line: str) -> TACInstruction:
         """Parse if_false instruction"""
         # Format: if_false condition goto label
-        match = re.match(r'if_false\s+(\w+)\s+goto\s+(\w+)', line)
-        if match:
-            condition, label = match.groups()
+        result = self._parse_pattern_if_condition(line, 'if_false ')
+        if result:
+            condition, label = result
             return TACInstruction(
                 operation=TACOperation.IF_FALSE,
                 arg1=condition,
@@ -97,9 +233,9 @@ class TACParser:
     def _parse_if_true(self, line: str) -> TACInstruction:
         """Parse if_true instruction"""
         # Format: if_true condition goto label
-        match = re.match(r'if_true\s+(\w+)\s+goto\s+(\w+)', line)
-        if match:
-            condition, label = match.groups()
+        result = self._parse_pattern_if_condition(line, 'if_true ')
+        if result:
+            condition, label = result
             return TACInstruction(
                 operation=TACOperation.IF_TRUE,
                 arg1=condition,
@@ -112,9 +248,9 @@ class TACParser:
     def _parse_call(self, line: str) -> TACInstruction:
         """Parse function call instruction"""
         # Format: call function_name, num_params
-        match = re.match(r'call\s+(\w+),\s*(\d+)', line)
-        if match:
-            function_name, num_params = match.groups()
+        result = self._parse_pattern_call(line)
+        if result:
+            function_name, num_params = result
             return TACInstruction(
                 operation=TACOperation.CALL,
                 arg1=function_name,
@@ -163,9 +299,9 @@ class TACParser:
     def _parse_assignment(self, line: str) -> TACInstruction:
         """Parse assignment or operation instruction"""
         # Check for array assignment first: array[index] = value
-        array_assign_match = re.match(r'(\w+)\[(\w+)\]\s*=\s*(.+)', line)
-        if array_assign_match:
-            array, index, value = array_assign_match.groups()
+        array_assign_result = self._parse_pattern_array_assign(line)
+        if array_assign_result:
+            array, index, value = array_assign_result
             return TACInstruction(
                 operation=TACOperation.ARRAY_ASSIGN,
                 result=array.strip(),
@@ -174,9 +310,9 @@ class TACParser:
             )
         
         # Check for object assignment: object.property = value
-        object_assign_match = re.match(r'(\w+)\.(\w+)\s*=\s*(.+)', line)
-        if object_assign_match:
-            object_name, property_name, value = object_assign_match.groups()
+        object_assign_result = self._parse_pattern_object_assign(line)
+        if object_assign_result:
+            object_name, property_name, value = object_assign_result
             return TACInstruction(
                 operation=TACOperation.OBJECT_ASSIGN,
                 result=object_name.strip(),
@@ -239,9 +375,9 @@ class TACParser:
                 )
         
         # Check for array access: result = array[index]
-        array_match = re.match(r'(\w+)\[(\w+)\]', expression)
-        if array_match:
-            array, index = array_match.groups()
+        array_access_result = self._parse_pattern_array_access(expression)
+        if array_access_result:
+            array, index = array_access_result
             return TACInstruction(
                 operation=TACOperation.ARRAY_ACCESS,
                 result=result,
@@ -249,11 +385,10 @@ class TACParser:
                 arg2=index
             )
         
-        
         # Check for object access: result = object.property
-        object_match = re.match(r'(\w+)\.(\w+)', expression)
-        if object_match:
-            object_name, property_name = object_match.groups()
+        object_access_result = self._parse_pattern_object_access(expression)
+        if object_access_result:
+            object_name, property_name = object_access_result
             return TACInstruction(
                 operation=TACOperation.OBJECT_ACCESS,
                 result=result,
@@ -262,9 +397,9 @@ class TACParser:
             )
         
         # Check for new object: result = new ClassName
-        new_match = re.match(r'new\s+(\w+)', expression)
-        if new_match:
-            class_name = new_match.group(1)
+        new_object_result = self._parse_pattern_new_object(expression)
+        if new_object_result:
+            class_name = new_object_result
             return TACInstruction(
                 operation=TACOperation.NEW_OBJECT,
                 result=result,

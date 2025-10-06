@@ -839,9 +839,6 @@ class ExpressionEvaluator:
                 return left == SymbolType.INTEGER and right == SymbolType.INTEGER
         elif operation in ["<", "<=", ">", ">="]:
             return left == right and left in [SymbolType.INTEGER, SymbolType.STRING]
-        elif operation == "parameter":
-            # For parameter passing, types must match exactly
-            return left == right
 
         elif operation in ["&&", "||"]:
             return left == SymbolType.BOOLEAN and right == SymbolType.BOOLEAN
@@ -861,38 +858,24 @@ class ExpressionEvaluator:
         return len(self.errors) > 0
     
     def _validate_parameter_count(self, ctx, function_symbol: FunctionSymbol, function_name: str):
-        """Validate that the number of arguments matches the function signature and types are compatible"""
-        # Get arguments passed in the call
-        argument_expressions = []
+        """Validate that the number of arguments matches the function signature"""
+        # Count the arguments passed in the call
+        argument_count = 0
         if hasattr(ctx, 'arguments') and ctx.arguments():
+            # Count the expressions in the arguments
             if hasattr(ctx.arguments(), 'expression') and ctx.arguments().expression():
-                args = ctx.arguments().expression()
-                if isinstance(args, list):
-                    argument_expressions = args
+                argument_expressions = ctx.arguments().expression()
+                if isinstance(argument_expressions, list):
+                    argument_count = len(argument_expressions)
                 else:
-                    argument_expressions = [args]  # Single argument
+                    argument_count = 1  # Single argument
         
         # Get expected parameter count
         expected_count = len(function_symbol.parameters)
-        actual_count = len(argument_expressions)
         
         # Validate the counts match
-        if actual_count != expected_count:
-            self.add_error(ctx, f"Function '{function_name}' expects {expected_count} parameter(s), but {actual_count} were provided")
-            return  # Don't check types if parameter count is wrong
-        
-        # Validate parameter types if counts match
-        for i, (param_name, param_type) in enumerate(function_symbol.parameters):
-            if i < len(argument_expressions):
-                arg_expr = argument_expressions[i]
-                arg_type = self.evaluate_expression(arg_expr)
-                
-                # Check if argument type is compatible with parameter type
-                if arg_type != SymbolType.NULL and not self.are_types_compatible(param_type, arg_type, "parameter"):
-                    # Convert type enum to readable string
-                    param_type_str = param_type.name.lower() if hasattr(param_type, 'name') else str(param_type)
-                    arg_type_str = arg_type.name.lower() if hasattr(arg_type, 'name') else str(arg_type)
-                    self.add_error(arg_expr, f"Function '{function_name}' parameter '{param_name}' expects type '{param_type_str}', but got '{arg_type_str}'")
+        if argument_count != expected_count:
+            self.add_error(ctx, f"Function '{function_name}' expects {expected_count} parameter(s), but {argument_count} were provided")
     
     def _validate_constructor_call(self, ctx, class_symbol):
         """Validate constructor call parameters"""

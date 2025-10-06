@@ -1,0 +1,51 @@
+class Persona {
+  let nombre: string;
+  let edad: integer;
+  let color: string;
+  
+  function constructor(nombre: string, edad: integer) {
+    this.nombre = nombre;
+    this.edad = edad;
+    this.color = "rojo";
+  }
+
+  function saludar(): string {
+    return "Hola, mi nombre es " + this.color;
+  }
+}
+
+class Estudiante : Persona {
+  let grado: integer;
+  
+  function constructor(nombre: string, edad: integer, grado: integer) {
+    // Llamar al constructor de la clase padre
+    this.nombre = nombre;
+    this.edad = edad;
+    this.grado = grado;
+  }
+
+  function estudiar(): string {
+    return this.nombre + " esta estudiando en " + this.grado + " grado.";
+  }
+}
+
+let nombre: string = "Erick";
+
+let ropero: Persona = new Persona(nombre, 20);
+let juan: Estudiante = new Estudiante(nombre, 20, 3);
+print(juan.saludar());    // Salida: Hola, mi nombre es Juan
+print(juan.estudiar());   // Salida: Juan esta estudiando en 3 grado
+
+for (let i: integer = 1; i <= 5; i = i + 1) {
+  if (i % 2 == 0) {
+    print(i + " es par");
+  } else {
+    print(i + " es impar");
+  }
+}
+
+let edadActual: integer = 20;
+while (edadActual < 25) {
+  edadActual = edadActual + 1;
+  print("Edad actual: " + edadActual);
+}
