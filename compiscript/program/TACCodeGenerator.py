@@ -546,7 +546,14 @@ class TACCodeGenerator(CompiscriptListener):
         # Obtener el texto completo para casos simples
         text = ctx.getText()
         
-        # Casos simples: literales directos
+        # PRIMERO: Intentar parsear como expresión binaria (concatenación, aritmética, etc.)
+        # Esto debe ir ANTES de los casos simples para manejar expresiones complejas
+        if any(op in text for op in ['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=', '&&', '||']):
+            result = self._parse_binary_expression(text)
+            if result:
+                return result
+        
+        # DESPUÉS: Casos simples solo si NO es una expresión compleja
         if text.isdigit():
             return text
         
