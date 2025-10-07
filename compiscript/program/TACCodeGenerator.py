@@ -1257,7 +1257,11 @@ class TACCodeGenerator(CompiscriptListener):
                     # Manejar this.field = value
                     obj_text = obj_expr.getText() if hasattr(obj_expr, 'getText') else str(obj_expr)
                     if obj_text == "this":
-                        self.emit(f'this."{field_name}" = {value_result}')
+                        # Buscar el offset del campo en la clase actual
+                        current_class_name = self.current_class if self.current_class else None
+                        if current_class_name and current_class_name in self.class_fields:
+                            field_offset = self.class_fields[current_class_name].get(field_name, 0)
+                            self.emit(f'fp[-1][{field_offset}] := {value_result}')
                     else:
                         self._handle_field_assignment(obj_result, field_name, value_result)
                 return
