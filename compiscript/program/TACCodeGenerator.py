@@ -408,7 +408,7 @@ class TACCodeGenerator(CompiscriptListener):
         # Move this check before Identifier-based early returns so returns like:
         #   "Ahora tengo " + toString(this.edad) + " años."
         # get decomposed into PARAM/CALL + concat steps.
-        if '+' in text and ('"' in text or 'toString' in text or '(' in text):
+        if '+' in text and ('"' in text or '(' in text):
             result = self._handle_complex_concatenation(text)
             if result:
                 return result
@@ -1250,7 +1250,7 @@ class TACCodeGenerator(CompiscriptListener):
                     self.emit_return(temp)
                     return
                 
-                if '+' in expr_text and ('"' in expr_text or 'toString' in expr_text or '(' in expr_text):
+                if '+' in expr_text and ('"' in expr_text or '(' in expr_text):
                     res = self._handle_complex_concatenation(expr_text)
                     if res:
                         self.emit_return(res)
