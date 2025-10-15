@@ -64,6 +64,10 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Resultados de expresiones para el visitor pattern
         self.expression_results: Dict[int, str] = {}
+        
+        # Optimización: rastrear el temporal asociado a cada variable local
+        # para evitar asignaciones innecesarias cuando se retorna inmediatamente
+        self.variable_to_temp: Dict[str, str] = {}  # nombre_var -> temporal
     
     def new_temp(self) -> str:
         """Genera un nuevo temporal: t0, t1, t2, ..."""
@@ -137,13 +141,17 @@ class TACCodeGenerator(CompiscriptListener):
         """Obtiene el slot para una variable, creándola si es necesario"""
         return self.get_variable_slot(var_name, "integer")
     
-    def emit(self, instruction: str):
-        """Emite una instrucción TAC con indentación automática"""
+    def emit(self, instruction: str, comment: str = None):
+        """Emite una instrucción TAC con indentación automática y comentario opcional"""
         if instruction.strip():  # No líneas en blanco
+            # Agregar comentario si se proporciona
+            if comment:
+                instruction = f"{instruction}      ; {comment}"
+            
             if self.use_indentation and self.current_function:
                 # Solo indentar si estamos dentro de una función
                 # Labels no se indentan, el resto sí (con 1 tab)
-                if instruction.endswith(':') or instruction.startswith('//') or instruction.startswith('FUNCTION') or instruction.startswith('END FUNCTION'):
+                if instruction.endswith(':') or instruction.startswith('//') or instruction.startswith(';') or instruction.startswith('FUNCTION') or instruction.startswith('END FUNCTION'):
                     # Labels, comentarios y declaraciones de función van sin indentación
                     self.instructions.append(instruction)
                 else:
@@ -151,6 +159,10 @@ class TACCodeGenerator(CompiscriptListener):
                     self.instructions.append(f"\t{instruction}")
             else:
                 self.instructions.append(instruction)
+    
+    def emit_comment(self, comment: str):
+        """Emite un comentario (no indentado)"""
+        self.instructions.append(f"; {comment}")
     
     def indent_in(self):
         """Aumenta el nivel de indentación"""
@@ -244,18 +256,43 @@ class TACCodeGenerator(CompiscriptListener):
         self.current_local_offset = 0
         self.local_variables.clear()
         
+        # Resetear contador de temporales para cada función (para mejor legibilidad)
+        self.temp_counter = 0
+        
+        # Resetear mapeo de variables a temporales para optimización
+        self.variable_to_temp.clear()
+        
         # Los slots de parámetros serán negativos para diferenciarlos
         
+        # Detectar si la función está declarada dentro de una clase (método)
+        is_method = False
+        parent = getattr(ctx, 'parentCtx', None)
+        while parent:
+            if type(parent).__name__ == 'ClassDeclarationContext':
+                is_method = True
+                break
+            parent = getattr(parent, 'parentCtx', None)
+
         # Asignar slots para parámetros (negativos para parámetros)
+        # Si es un método de clase, reservar fp[-1] para 'this' y desplazar parámetros
         if ctx.parameters() and ctx.parameters().parameter():
             for i, param in enumerate(ctx.parameters().parameter()):
-                if param.Identifier():
-                    param_name = param.Identifier().getText()
-                    # Usar slots negativos para parámetros
-                    param_offset = -(i + 1)
-                    self.local_variables[param_name] = param_offset
-                    self.scope_variables[current_scope][param_name] = param_offset
-        
+                    if param.Identifier():
+                        param_name = param.Identifier().getText()
+                        # Usar slots negativos para parámetros; si es método, desplazar en 1
+                        base_shift = 1 if is_method else 0
+                        param_offset = -(i + 1 + base_shift)
+                        self.local_variables[param_name] = param_offset
+                        self.scope_variables[current_scope][param_name] = param_offset
+
+            # Si es un método, reservar 'this' en offset 0 (primer slot de objeto)
+            if is_method:
+                # 'this' estará disponible como fp[-1]
+                self.local_variables['this'] = 0
+                self.scope_variables[current_scope]['this'] = 0
+
+        # Record start index of function body in instructions to detect missing RETURN
+        self.current_function_start = len(self.instructions)
         self.emit(f"FUNCTION {func_name}:")
         # Indentar el contenido de la función
         self.indent_in()
@@ -267,6 +304,20 @@ class TACCodeGenerator(CompiscriptListener):
             # Comentado: if not self.instructions or not self.instructions[-1].strip().startswith("RETURN"):
             #     self.emit("RETURN")
             
+            # If constructor has no RETURN, emit RETURN 0 per TAC convention
+            try:
+                func_name = self.current_function
+                # scan instructions emitted since function start for a RETURN
+                has_return = False
+                for instr in self.instructions[self.current_function_start:]:
+                    if instr.strip().startswith('RETURN'):
+                        has_return = True
+                        break
+                if func_name == 'constructor' and not has_return:
+                    self.emit_return('0')
+            except Exception:
+                pass
+
             # Des-indentar antes del END FUNCTION
             self.indent_out()
             self.emit(f"END FUNCTION {self.current_function}")
@@ -300,7 +351,16 @@ class TACCodeGenerator(CompiscriptListener):
         # Solo generar código TAC si hay inicializador explícito
         if ctx.initializer() and ctx.initializer().expression():
             result = self.visit_expression(ctx.initializer().expression())
-            self.emit_assign(f"{memory_type}[{offset}]", result)
+            
+            # OPTIMIZACIÓN: Si el resultado es un temporal (tX), no lo asignamos a memoria
+            # Solo guardamos la asociación para que return pueda usarlo directamente
+            if result.startswith('t') and result[1:].isdigit():
+                # Es un temporal, guardamos la asociación sin emitir asignación
+                self.variable_to_temp[var_name] = result
+            else:
+                # No es un temporal (es un literal, variable, etc), emitir asignación normal
+                self.emit_assign(f"{memory_type}[{offset}]", result)
+                self.variable_to_temp[var_name] = f"{memory_type}[{offset}]"
     
     # ==================== EXPRESSIONS ====================
     
@@ -344,6 +404,15 @@ class TACCodeGenerator(CompiscriptListener):
             return "0"
         
         # Variables simples (sin operaciones)
+        # BUT first handle complex concatenations that include function calls or string literals
+        # Move this check before Identifier-based early returns so returns like:
+        #   "Ahora tengo " + toString(this.edad) + " años."
+        # get decomposed into PARAM/CALL + concat steps.
+        if '+' in text and ('"' in text or 'toString' in text or '(' in text):
+            result = self._handle_complex_concatenation(text)
+            if result:
+                return result
+
         if text.isalnum() and not text.isdigit():
             return self.get_variable_slot_lazy(text)
         
@@ -366,6 +435,7 @@ class TACCodeGenerator(CompiscriptListener):
             return self.get_variable_slot_lazy(var_name)
         
         # Expresiones con children (más robusto)
+
         if hasattr(ctx, 'children') and ctx.children:
             result = self._evaluate_from_children(ctx)
             if result != "0":
@@ -388,13 +458,127 @@ class TACCodeGenerator(CompiscriptListener):
                     return self.visit_expression(child)
         
         return "0"  # Fallback
+
+    def _split_expression_by_plus(self, text: str) -> list:
+        parts = []
+        current_part = ""
+        paren_depth = 0
+        in_quotes = False
+        i = 0
+        while i < len(text):
+            c = text[i]
+            if c == '"' and (i == 0 or text[i-1] != '\\'):
+                in_quotes = not in_quotes
+                current_part += c
+            elif in_quotes:
+                current_part += c
+            elif c == '(':
+                paren_depth += 1
+                current_part += c
+            elif c == ')':
+                paren_depth -= 1
+                current_part += c
+            elif c == '+' and paren_depth == 0:
+                if current_part.strip():
+                    parts.append(current_part.strip())
+                current_part = ""
+            else:
+                current_part += c
+            i += 1
+        if current_part.strip():
+            parts.append(current_part.strip())
+        return parts
+
+    def _handle_complex_concatenation(self, text: str) -> str:
+        """Convierte concatenaciones complejas con llamadas a función en secuencia TAC.
+        Devuelve el temporal final que contiene la concatenación.
+        """
+        parts = self._split_expression_by_plus(text)
+        if len(parts) < 2:
+            return None
+
+        # Quick path: if there are exactly 2 parts and neither part is a function call,
+        # emit a single binary '+' operation (result := left + right) to match the
+        # target intermediate code when concatenating a literal with a field.
+        simple_parts = [p.strip() for p in parts]
+        simple_no_calls = all(('(' not in p and ')' not in p) for p in simple_parts)
+        if len(simple_parts) == 2 and simple_no_calls:
+            left = simple_parts[0]
+            right = simple_parts[1]
+            # Evaluate operands directly without creating unnecessary temporaries for literals
+            left_res = left if left.startswith('"') and left.endswith('"') else self._evaluate_simple_operand(left)
+            right_res = right if right.startswith('"') and right.endswith('"') else self._evaluate_simple_operand(right)
+
+            result_temp = self.new_temp()
+            # emit binary '+' using emit_binary_op to produce: t := left + right
+            self.emit_binary_op(result_temp, left_res, '+', right_res)
+            return result_temp
+
+        # For complex concatenations with 3+ parts, build incrementally
+        current_result = None
+        for i, part in enumerate(parts):
+            part = part.strip()
+            # function call like toString(arg)
+            if '(' in part and ')' in part:
+                # parse name and arg
+                name, rest = part.split('(', 1)
+                name = name.strip()
+                args_text = rest.rstrip(')')
+                args = [a.strip() for a in args_text.split(',') if a.strip()]
+                # Evaluate args and emit PARAMs
+                for a in args:
+                    arg_res = self._evaluate_simple_operand(a) if isinstance(a, str) else self.visit_expression(a)
+                    # if arg_res is a slot like fp[...] or a temp, emit as PARAM
+                    self.emit_param(arg_res)
+                # emit call
+                self.emit_call(name, len(args))
+                temp = self.new_temp()
+                self.emit_assign(temp, 'R')
+                part_result = temp
+            # literal - use directly without creating temp
+            elif part.startswith('"') and part.endswith('"'):
+                part_result = part
+            # property or variable
+            else:
+                part_result = self._evaluate_simple_operand(part)
+
+            if current_result is None:
+                current_result = part_result
+            else:
+                # concatenate current_result with part_result using binary operator
+                tmp = self.new_temp()
+                self.emit_binary_op(tmp, current_result, '+', part_result)
+                current_result = tmp
+
+        return current_result
     
     def _parse_binary_expression(self, text: str) -> str:
         """Parsea expresiones binarias simples desde texto - ORDEN DE PRECEDENCIA CORRECTO"""
         if not text:
             return None
         
-        # Verificar si hay paréntesis para llamadas a función
+        # Quitar paréntesis externos si envuelven toda la expresión
+        text = text.strip()
+        while text.startswith('(') and text.endswith(')'):
+            # Verificar que los paréntesis son balanceados y envuelven toda la expresión
+            depth = 0
+            is_wrapping = True
+            for i, c in enumerate(text):
+                if c == '(':
+                    depth += 1
+                elif c == ')':
+                    depth -= 1
+                # Si depth llega a 0 antes del final, los paréntesis no envuelven todo
+                if depth == 0 and i < len(text) - 1:
+                    is_wrapping = False
+                    break
+            
+            if is_wrapping:
+                text = text[1:-1].strip()
+            else:
+                break
+        
+        # Verificar si hay paréntesis para llamadas a función (después de quitar paréntesis externos)
         if "(" in text and ")" in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
             # Posible llamada a función
             func_match = text.split('(', 1)
@@ -435,8 +619,10 @@ class TACCodeGenerator(CompiscriptListener):
         # Encontrar el operador de menor precedencia para dividir por ahí
         for operator_group in operators_by_precedence:
             # Buscar el último operador de este grupo (de derecha a izquierda)
+            # pero RESPETANDO paréntesis - solo buscar fuera de paréntesis
             best_split = None
             best_op = None
+            best_index = -1
             
             for op in operator_group:
                 if op in text and not (text.startswith('"') and text.endswith('"')):
@@ -446,14 +632,23 @@ class TACCodeGenerator(CompiscriptListener):
                     if op == '>' and '>=' in text:
                         continue  # Evitar confusión con >=
                     
-                    index = text.rfind(op)
-                    if index > 0:  # Debe haber algo antes del operador
-                        left_part = text[:index].strip()
-                        right_part = text[index + len(op):].strip()
-                        if left_part and right_part:  # Ambas partes deben ser válidas
-                            best_split = (left_part, right_part)
-                            best_op = op
-                            break
+                    # Buscar el último operador FUERA de paréntesis
+                    paren_depth = 0
+                    for i in range(len(text) - 1, -1, -1):
+                        if text[i] == ')':
+                            paren_depth += 1
+                        elif text[i] == '(':
+                            paren_depth -= 1
+                        elif paren_depth == 0 and text[i:i+len(op)] == op:
+                            # Found operator outside parentheses
+                            if i > 0 and i > best_index:  # Debe haber algo antes
+                                left_part = text[:i].strip()
+                                right_part = text[i + len(op):].strip()
+                                if left_part and right_part:
+                                    best_split = (left_part, right_part)
+                                    best_op = op
+                                    best_index = i
+                                    break
             
             if best_split:
                 left, right = best_split
@@ -511,6 +706,32 @@ class TACCodeGenerator(CompiscriptListener):
         
         if operand.isalnum():
             return self.get_variable_slot_lazy(operand)
+
+        # Manejo de acceso a propiedades: this.prop o obj.prop
+        if '.' in operand:
+            parts = operand.split('.', 1)
+            base = parts[0].strip()
+            prop = parts[1].strip()
+
+            # Buscar offset de la propiedad en la tabla global (las propiedades de clase se reservan globalmente)
+            prop_offset = None
+            if prop in self.global_variables:
+                prop_offset = self.global_variables[prop]
+            elif 'global' in self.scope_variables and prop in self.scope_variables['global']:
+                prop_offset = self.scope_variables['global'][prop]
+
+            # Base 'this' => acceder al objeto actual en fp[-1]
+            if base == 'this':
+                if prop_offset is not None:
+                    return f"fp[-1][{prop_offset}]"
+                else:
+                    return "fp[-1]"
+
+            # Base es una variable/identificador: obtener su slot y anexar [offset]
+            base_slot = self.get_variable_slot_lazy(base)
+            if prop_offset is not None:
+                return f"{base_slot}[{prop_offset}]"
+            return base_slot
         
         return "0"
     
@@ -816,12 +1037,57 @@ class TACCodeGenerator(CompiscriptListener):
     
     def enterAssignment(self, ctx: CompiscriptParser.AssignmentContext):
         """Asignación directa"""
+        # Support both simple assignments and property assignments
+        # assignment rule in grammar supports both:
+        # Identifier '=' expression
+        # expression '.' Identifier '=' expression  (property assignment)
+
+        # Property assignment: expression '.' Identifier '=' expression
+        try:
+            # Si el ctx tiene children like [base, '.', Identifier, '=', expr, ';']
+            children = ctx.children
+            if children and len(children) >= 5 and children[1].getText() == '.':
+                # property assignment
+                base_text = children[0].getText()
+                prop_name = children[2].getText()
+                rhs_ctx = children[4]
+
+                # Obtener slot del right-hand-side
+                rhs = self.visit_expression(rhs_ctx)
+
+                # Obtener offset de la propiedad (se esperan propiedades reservadas en scope_variables['global'])
+                prop_offset = None
+                if prop_name in self.global_variables:
+                    prop_offset = self.global_variables[prop_name]
+                elif 'global' in self.scope_variables and prop_name in self.scope_variables['global']:
+                    prop_offset = self.scope_variables['global'][prop_name]
+
+                # Resolver base slot
+                if base_text == 'this':
+                    if prop_offset is not None:
+                        target = f"fp[-1][{prop_offset}]"
+                    else:
+                        target = "fp[-1]"
+                else:
+                    base_slot = self.get_variable_slot_lazy(base_text)
+                    if prop_offset is not None:
+                        target = f"{base_slot}[{prop_offset}]"
+                    else:
+                        target = base_slot
+
+                self.emit_assign(target, rhs)
+                return
+        except Exception:
+            # Fallthrough to simple assignment handling
+            pass
+
+        # Simple identifier assignment
         if not ctx.Identifier():
             return
-        
+
         var_name = ctx.Identifier().getText()
         var_slot = self.get_variable_slot_lazy(var_name)  # Reservar slot cuando se use
-        
+
         # Verificar si expression() devuelve una lista o un contexto único
         expr = ctx.expression()
         if expr:
@@ -971,6 +1237,27 @@ class TACCodeGenerator(CompiscriptListener):
     def enterReturnStatement(self, ctx: CompiscriptParser.ReturnStatementContext):
         """Statement return"""
         if ctx.expression():
+            # Quick-path: if the raw expression text looks like a complex concatenation
+            # that includes function calls or string literals, force decomposition
+            # via _handle_complex_concatenation to emit PARAM/CALL concat sequences.
+            try:
+                expr_text = ctx.expression().getText()
+                
+                # OPTIMIZACIÓN: Si el return es de una variable simple que tiene temporal asociado,
+                # retornar directamente el temporal
+                if expr_text.isalnum() and expr_text in self.variable_to_temp:
+                    temp = self.variable_to_temp[expr_text]
+                    self.emit_return(temp)
+                    return
+                
+                if '+' in expr_text and ('"' in expr_text or 'toString' in expr_text or '(' in expr_text):
+                    res = self._handle_complex_concatenation(expr_text)
+                    if res:
+                        self.emit_return(res)
+                        return
+            except Exception:
+                pass
+
             result = self.visit_expression(ctx.expression())
             self.emit_return(result)
         else:
