@@ -355,18 +355,15 @@ class TACCodeGenerator(CompiscriptListener):
         # Solo generar código TAC si hay inicializador explícito
         if ctx.initializer() and ctx.initializer().expression():
             result = self.visit_expression(ctx.initializer().expression())
-            expr_text = ctx.initializer().expression().getText()
             
-            # OPTIMIZACIÓN: Si el resultado es un temporal (tX) Y NO es una instancia (new),
-            # no lo asignamos a memoria. Solo guardamos la asociación para que return pueda usarlo directamente
-            is_new_expression = expr_text.startswith('new')
+            # SIEMPRE emitir asignación a memoria para que la variable esté disponible
+            # en todos los contextos (parámetros de función, asignaciones, etc.)
+            self.emit_assign(f"{memory_type}[{offset}]", result)
             
-            if result.startswith('t') and result[1:].isdigit() and not is_new_expression:
-                # Es un temporal simple (no instancia), guardamos la asociación sin emitir asignación
+            # Guardar también el temporal original para optimización en return directo
+            if result.startswith('t') and result[1:].isdigit():
                 self.variable_to_temp[var_name] = result
             else:
-                # Es un literal, variable, instancia, etc - emitir asignación normal
-                self.emit_assign(f"{memory_type}[{offset}]", result)
                 self.variable_to_temp[var_name] = f"{memory_type}[{offset}]"
     
     # ==================== EXPRESSIONS ====================
@@ -415,7 +412,8 @@ class TACCodeGenerator(CompiscriptListener):
         # Move this check before Identifier-based early returns so returns like:
         #   "Ahora tengo " + toString(this.edad) + " años."
         # get decomposed into PARAM/CALL + concat steps.
-        if '+' in text and ('"' in text or '(' in text):
+        # IMPORTANTE: Solo si hay comillas (string literal) o si tiene toString() - NO para operaciones aritméticas puras
+        if '+' in text and ('"' in text or 'toString(' in text):
             result = self._handle_complex_concatenation(text)
             if result:
                 return result
@@ -525,8 +523,12 @@ class TACCodeGenerator(CompiscriptListener):
         current_result = None
         for i, part in enumerate(parts):
             part = part.strip()
-            # function call like toString(arg) or obj.method(arg)
-            if '(' in part and ')' in part:
+            
+            # Check if it's a string literal first (skip function call detection)
+            if part.startswith('"') and part.endswith('"'):
+                part_result = part
+            # function call like toString(arg) or obj.method(arg) - NOT a string literal with parens
+            elif '(' in part and ')' in part and not (part.startswith('"') or part.endswith('"')):
                 # parse name and arg
                 name, rest = part.split('(', 1)
                 name = name.strip()
@@ -559,9 +561,6 @@ class TACCodeGenerator(CompiscriptListener):
                 temp = self.new_temp()
                 self.emit_assign(temp, 'R')
                 part_result = temp
-            # literal - use directly without creating temp
-            elif part.startswith('"') and part.endswith('"'):
-                part_result = part
             # property or variable
             else:
                 part_result = self._evaluate_simple_operand(part)
@@ -601,6 +600,12 @@ class TACCodeGenerator(CompiscriptListener):
                 text = text[1:-1].strip()
             else:
                 break
+        
+        # Verificar si es un acceso a propiedad simple (obj.prop) SIN paréntesis de llamada
+        # Esto NO es una llamada a función, es solo un acceso a campo
+        if '.' in text and '(' not in text and ')' not in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
+            # Es un acceso simple a propiedad SIN operadores, evaluar con _evaluate_simple_operand
+            return self._evaluate_simple_operand(text)
         
         # Verificar si hay paréntesis para llamadas a función (después de quitar paréntesis externos)
         if "(" in text and ")" in text and not any(op in text for op in ['||', '&&', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%']):
