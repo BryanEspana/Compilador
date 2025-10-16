@@ -351,14 +351,17 @@ class TACCodeGenerator(CompiscriptListener):
         # Solo generar código TAC si hay inicializador explícito
         if ctx.initializer() and ctx.initializer().expression():
             result = self.visit_expression(ctx.initializer().expression())
+            expr_text = ctx.initializer().expression().getText()
             
-            # OPTIMIZACIÓN: Si el resultado es un temporal (tX), no lo asignamos a memoria
-            # Solo guardamos la asociación para que return pueda usarlo directamente
-            if result.startswith('t') and result[1:].isdigit():
-                # Es un temporal, guardamos la asociación sin emitir asignación
+            # OPTIMIZACIÓN: Si el resultado es un temporal (tX) Y NO es una instancia (new),
+            # no lo asignamos a memoria. Solo guardamos la asociación para que return pueda usarlo directamente
+            is_new_expression = expr_text.startswith('new')
+            
+            if result.startswith('t') and result[1:].isdigit() and not is_new_expression:
+                # Es un temporal simple (no instancia), guardamos la asociación sin emitir asignación
                 self.variable_to_temp[var_name] = result
             else:
-                # No es un temporal (es un literal, variable, etc), emitir asignación normal
+                # Es un literal, variable, instancia, etc - emitir asignación normal
                 self.emit_assign(f"{memory_type}[{offset}]", result)
                 self.variable_to_temp[var_name] = f"{memory_type}[{offset}]"
     
@@ -518,20 +521,37 @@ class TACCodeGenerator(CompiscriptListener):
         current_result = None
         for i, part in enumerate(parts):
             part = part.strip()
-            # function call like toString(arg)
+            # function call like toString(arg) or obj.method(arg)
             if '(' in part and ')' in part:
                 # parse name and arg
                 name, rest = part.split('(', 1)
                 name = name.strip()
                 args_text = rest.rstrip(')')
-                args = [a.strip() for a in args_text.split(',') if a.strip()]
-                # Evaluate args and emit PARAMs
-                for a in args:
-                    arg_res = self._evaluate_simple_operand(a) if isinstance(a, str) else self.visit_expression(a)
-                    # if arg_res is a slot like fp[...] or a temp, emit as PARAM
-                    self.emit_param(arg_res)
-                # emit call
-                self.emit_call(name, len(args))
+                
+                # Detectar si es una llamada a método (obj.method)
+                obj_name = None
+                method_name = name
+                num_args = 0
+                
+                if '.' in name:
+                    parts_split = name.split('.', 1)
+                    obj_name = parts_split[0].strip()
+                    method_name = parts_split[1].strip()
+                    # Pasar el objeto como primer parámetro (this)
+                    obj_slot = self.get_variable_slot_lazy(obj_name)
+                    self.emit_param(obj_slot)
+                    num_args += 1
+                
+                # Evaluar y emitir argumentos adicionales
+                if args_text.strip():
+                    args = [a.strip() for a in args_text.split(',') if a.strip()]
+                    num_args += len(args)
+                    for a in args:
+                        arg_res = self._evaluate_simple_operand(a) if isinstance(a, str) else self.visit_expression(a)
+                        self.emit_param(arg_res)
+                
+                # emit call (solo nombre del método, sin objeto)
+                self.emit_call(method_name, num_args)
                 temp = self.new_temp()
                 self.emit_assign(temp, 'R')
                 part_result = temp
@@ -586,18 +606,34 @@ class TACCodeGenerator(CompiscriptListener):
                 func_name = func_match[0].strip()
                 args_text = func_match[1].rstrip(')')
                 
-                # Contar argumentos
+                # Detectar si es una llamada a método (obj.method)
+                obj_name = None
+                method_name = func_name
+                if '.' in func_name:
+                    parts = func_name.split('.', 1)
+                    obj_name = parts[0].strip()
+                    method_name = parts[1].strip()
+                
+                # Si es una llamada a método, pasar el objeto como primer parámetro
                 num_args = 0
+                if obj_name:
+                    # Pasar el objeto como primer parámetro (this)
+                    obj_slot = self.get_variable_slot_lazy(obj_name)
+                    if self.emit_params:
+                        self.emit(f"PARAM {obj_slot}")
+                    num_args += 1
+                
+                # Contar y emitir argumentos adicionales
                 if args_text.strip():
                     args = [arg.strip() for arg in args_text.split(',') if arg.strip()]
-                    num_args = len(args)
+                    num_args += len(args)
                     for arg in args:
                         arg_result = self._evaluate_simple_operand(arg)
                         if self.emit_params:
                             self.emit(f"PARAM {arg_result}")
                 
-                # Emitir llamada con formato CALL func,num_args
-                self.emit(f"CALL {func_name},{num_args}")
+                # Emitir llamada con formato CALL func,num_args (solo el nombre del método, sin objeto)
+                self.emit(f"CALL {method_name},{num_args}")
                 
                 # Retornar resultado
                 result = self.new_temp()
