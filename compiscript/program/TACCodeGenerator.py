@@ -68,6 +68,10 @@ class TACCodeGenerator(CompiscriptListener):
         # Optimización: rastrear el temporal asociado a cada variable local
         # para evitar asignaciones innecesarias cuando se retorna inmediatamente
         self.variable_to_temp: Dict[str, str] = {}  # nombre_var -> temporal
+        
+        # Control de bloques if-else para evitar procesamiento incorrecto
+        self.in_if_then_block = False
+        self.if_else_blocks_stack = []  # Stack de (if_id, has_processed_then)
     
     def new_temp(self) -> str:
         """Genera un nuevo temporal: t0, t1, t2, ..."""
@@ -1164,13 +1168,14 @@ class TACCodeGenerator(CompiscriptListener):
         false_label = f"IF_FALSE_{if_id}"
         end_label = f"IF_END_{if_id}"
         
-        # t := eval(cond)
-        condition = self.visit_expression(ctx.expression())
-        condition_temp = self.new_temp()
-        self.emit_assign(condition_temp, condition)
+        # Verificar si hay bloque else
+        has_else = ctx.block() and len(ctx.block()) > 1
         
-        # IF t > 0 GOTO IF_TRUE_k
-        self.emit(f"IF {condition_temp} > 0 GOTO {true_label}")
+        # t := eval(cond) - usar directamente el resultado sin temporal extra
+        condition = self.visit_expression(ctx.expression())
+        
+        # IF condition > 0 GOTO IF_TRUE_k (usar directamente el resultado)
+        self.emit(f"IF {condition} > 0 GOTO {true_label}")
         
         # GOTO IF_FALSE_k
         self.emit(f"GOTO {false_label}")
@@ -1181,40 +1186,66 @@ class TACCodeGenerator(CompiscriptListener):
         # Indentar el contenido del if
         self.indent_in()
         
-        # Guardar labels para exitIfStatement
-        self.loop_labels.append((true_label, false_label, end_label))
+        # Guardar labels para exitIfStatement y control de bloques
+        self.loop_labels.append((true_label, false_label, end_label, has_else))
+        # Agregar info para el control de bloques: (if_id, has_processed_then, has_else)
+        self.if_else_blocks_stack.append((if_id, False, has_else))
     
     def exitIfStatement(self, ctx: CompiscriptParser.IfStatementContext):
         """Salida de if statement"""
         if not self.loop_labels:
             return
         
-        true_label, false_label, end_label = self.loop_labels.pop()
+        true_label, false_label, end_label, has_else = self.loop_labels.pop()
+        
+        # Limpiar el stack de control de bloques
+        if self.if_else_blocks_stack:
+            self.if_else_blocks_stack.pop()
         
         # Des-indentar antes de los labels finales
         self.indent_out()
         
-        # Verificar si hay bloque else
-        has_else = ctx.block() and len(ctx.block()) > 1
-        
         if has_else:
-            # GOTO IF_END_k (saltar del bloque then)
-            self.emit(f"GOTO {end_label}")
-            
-            # IF_FALSE_k: (inicio del bloque else)
-            self.emit_label(false_label)
-            
-            # Indentar el contenido del else
-            self.indent_in()
-            # El bloque else se procesa automáticamente
-            # (se des-indentará automáticamente al final)
-            self.indent_out()
-            
             # IF_END_k: (final)
             self.emit_label(end_label)
         else:
             # No hay else, IF_FALSE_k es el final
             self.emit_label(false_label)
+    
+    def enterBlock(self, ctx: CompiscriptParser.BlockContext):
+        """Entrada a un bloque - detectar si es bloque then o else de un if"""
+        if not self.if_else_blocks_stack:
+            return
+        
+        # Obtener el if actual del stack
+        if_id, has_processed_then, has_else = self.if_else_blocks_stack[-1]
+        
+        # Si no hemos procesado el bloque then, este es el bloque then
+        if not has_processed_then:
+            # Marcar que ya procesamos el then
+            self.if_else_blocks_stack[-1] = (if_id, True, has_else)
+        elif has_else:
+            # Este es el bloque else - necesitamos emitir GOTO IF_END antes
+            # y luego el label IF_FALSE
+            if self.loop_labels:
+                # Obtener los labels del if actual
+                true_label, false_label, end_label, _ = self.loop_labels[-1]
+                
+                # Des-indentar el then
+                self.indent_out()
+                
+                # GOTO IF_END_k (saltar del bloque then al final)
+                self.emit(f"GOTO {end_label}")
+                
+                # IF_FALSE_k: (inicio del bloque else)
+                self.emit_label(false_label)
+                
+                # Indentar el contenido del else
+                self.indent_in()
+    
+    def exitBlock(self, ctx: CompiscriptParser.BlockContext):
+        """Salida de un bloque - no hacer nada especial aquí"""
+        pass
     
     def enterWhileStatement(self, ctx: CompiscriptParser.WhileStatementContext):
         """Statement while - Formato correcto:
