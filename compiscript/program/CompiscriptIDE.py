@@ -7,11 +7,13 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, filedialog
 import os
 import tempfile
+import re
 from antlr4 import *
 from antlr4.error.ErrorListener import ErrorListener
 from CompiscriptLexer import CompiscriptLexer
 from CompiscriptParser import CompiscriptParser
 from SemanticAnalyzer import SemanticAnalyzer
+from MIPSGenerator import MIPSGenerator
 
 
 class CollectingErrorListener(ErrorListener):
@@ -71,6 +73,8 @@ class CompiscriptIDE:
         compile_menu.add_separator()
         compile_menu.add_command(label="View Symbol Table", command=self.show_symbol_table)
         compile_menu.add_command(label="View Intermediate Code", command=self.show_intermediate_code)
+        compile_menu.add_separator()
+        compile_menu.add_command(label="Generate MIPS Code", command=self.generate_mips_code, accelerator="F6")
 
 
         # Help menu
@@ -83,6 +87,7 @@ class CompiscriptIDE:
         self.root.bind('<Control-o>', lambda e: self.open_file())
         self.root.bind('<Control-s>', lambda e: self.save_file())
         self.root.bind('<F5>', lambda e: self.compile_code())
+        self.root.bind('<F6>', lambda e: self.generate_mips_code())
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -100,8 +105,10 @@ class CompiscriptIDE:
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
         ttk.Button(toolbar, text="Compile (F5)", command=self.compile_code).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Clear Output", command=self.clear_output).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(5, 0))
-        ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(toolbar, text="Generate MIPS (F6)", command=self.generate_mips_code).pack(side=tk.LEFT, padx=(0, 5))
 
         # Status label
         self.status_var = tk.StringVar(value="Ready")
@@ -502,6 +509,176 @@ class CompiscriptIDE:
         # Insertar el texto del código intermedio
         text_area.insert(tk.END, intermediate_code)
         text_area.config(state=tk.DISABLED)
+    
+    def generate_mips_code(self):
+        """Genera código MIPS desde el código intermedio"""
+        # Primero verificar que se haya compilado
+        if not self.last_analyzer:
+            messagebox.showwarning("Generate MIPS", "Por favor compile el código primero (F5)")
+            return
+        
+        # Verificar que haya código intermedio
+        intermediate_code = self.last_analyzer.get_intermediate_code()
+        if not intermediate_code or intermediate_code.strip() == "(No intermediate code generated)":
+            messagebox.showwarning("Generate MIPS", "No hay código intermedio disponible. Por favor compile primero.")
+            return
+        
+        # Verificar que no haya errores semánticos
+        if self.last_analyzer.has_errors():
+            result = messagebox.askyesno(
+                "Generate MIPS",
+                "Hay errores semánticos en el código.\n"
+                "¿Desea generar código MIPS de todas formas?"
+            )
+            if not result:
+                return
+        
+        try:
+            # Generar código MIPS
+            mips_generator = MIPSGenerator()
+            mips_code = mips_generator.generate(intermediate_code)
+            
+            # Preguntar dónde guardar el archivo
+            if self.current_file:
+                base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+                default_filename = base_name  # Sin extensión, defaultextension la agregará
+            else:
+                default_filename = "output"  # Sin extensión, defaultextension la agregará
+            
+            file_path = filedialog.asksaveasfilename(
+                title="Guardar Código MIPS",
+                defaultextension=".asm",
+                initialfile=default_filename,
+                filetypes=[("MIPS Assembly files", "*.asm"), ("All files", "*.*")]
+            )
+            
+            if file_path:
+                # Guardar archivo
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(mips_code)
+                
+                # Mostrar ventana con el código generado
+                mips_window = tk.Toplevel(self.root)
+                mips_window.title(f"Código MIPS - {os.path.basename(file_path)}")
+                mips_window.geometry("900x700")
+                
+                # Frame para botones
+                button_frame = ttk.Frame(mips_window)
+                button_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+                
+                ttk.Label(button_frame, text=f"Archivo guardado: {file_path}", font=('Arial', 9)).pack(side=tk.LEFT)
+                ttk.Button(button_frame, text="Copiar al Portapapeles", 
+                          command=lambda: self._copy_to_clipboard(mips_code)).pack(side=tk.RIGHT, padx=(5, 0))
+                
+                # Área de texto para mostrar código
+                text_area = scrolledtext.ScrolledText(mips_window, wrap=tk.NONE, font=('Consolas', 10))
+                text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                # Insertar código MIPS
+                text_area.insert(tk.END, mips_code)
+                text_area.config(state=tk.DISABLED)
+                
+                # Configurar tags para resaltado básico
+                text_area.config(state=tk.NORMAL)
+                self._highlight_mips_code(text_area)
+                text_area.config(state=tk.DISABLED)
+                
+                self.status_var.set(f"MIPS code generated: {os.path.basename(file_path)}")
+                messagebox.showinfo("Éxito", f"Código MIPS generado exitosamente:\n{file_path}")
+            else:
+                # Si no se guarda, solo mostrar en ventana
+                mips_window = tk.Toplevel(self.root)
+                mips_window.title("Código MIPS Generado")
+                mips_window.geometry("900x700")
+                
+                # Frame para botones
+                button_frame = ttk.Frame(mips_window)
+                button_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+                
+                ttk.Label(button_frame, text="Código MIPS generado (no guardado)", font=('Arial', 9)).pack(side=tk.LEFT)
+                ttk.Button(button_frame, text="Guardar Archivo", 
+                          command=lambda: self._save_mips_file(mips_code, mips_window)).pack(side=tk.RIGHT, padx=(5, 0))
+                ttk.Button(button_frame, text="Copiar al Portapapeles", 
+                          command=lambda: self._copy_to_clipboard(mips_code)).pack(side=tk.RIGHT, padx=(5, 0))
+                
+                # Área de texto
+                text_area = scrolledtext.ScrolledText(mips_window, wrap=tk.NONE, font=('Consolas', 10))
+                text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                
+                text_area.insert(tk.END, mips_code)
+                text_area.config(state=tk.NORMAL)
+                self._highlight_mips_code(text_area)
+                text_area.config(state=tk.DISABLED)
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al generar código MIPS:\n{str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    def _copy_to_clipboard(self, text):
+        """Copia texto al portapapeles"""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status_var.set("Código copiado al portapapeles")
+    
+    def _save_mips_file(self, mips_code, parent_window):
+        """Guarda el código MIPS en un archivo"""
+        if self.current_file:
+            base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+            default_filename = base_name  # Sin extensión, defaultextension la agregará
+        else:
+            default_filename = "output"  # Sin extensión, defaultextension la agregará
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Guardar Código MIPS",
+            defaultextension=".asm",
+            initialfile=default_filename,
+            filetypes=[("MIPS Assembly files", "*.asm"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(mips_code)
+                messagebox.showinfo("Éxito", f"Archivo guardado:\n{file_path}")
+                self.status_var.set(f"MIPS code saved: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo guardar el archivo:\n{str(e)}")
+    
+    def _highlight_mips_code(self, text_widget):
+        """Aplica resaltado básico al código MIPS"""
+        # Configurar tags para diferentes elementos
+        text_widget.tag_configure("directive", foreground="blue")
+        text_widget.tag_configure("label", foreground="green")
+        text_widget.tag_configure("register", foreground="red")
+        text_widget.tag_configure("comment", foreground="gray")
+        
+        content = text_widget.get(1.0, tk.END)
+        lines = content.split('\n')
+        
+        for i, line in enumerate(lines, 1):
+            line_start = f"{i}.0"
+            line_end = f"{i}.end"
+            
+            # Directivas (.data, .text, etc.)
+            if line.strip().startswith('.'):
+                text_widget.tag_add("directive", line_start, line_end)
+            
+            # Labels (terminan en :)
+            if ':' in line and not line.strip().startswith('.'):
+                colon_pos = line.find(':')
+                text_widget.tag_add("label", line_start, f"{i}.{colon_pos + 1}")
+            
+            # Registros ($t0, $s0, $a0, etc.)
+            for match in re.finditer(r'\$\w+', line):
+                start_pos = f"{i}.{match.start()}"
+                end_pos = f"{i}.{match.end()}"
+                text_widget.tag_add("register", start_pos, end_pos)
+            
+            # Comentarios (#)
+            if '#' in line:
+                comment_pos = line.find('#')
+                text_widget.tag_add("comment", f"{i}.{comment_pos}", line_end)
     
     def clear_output(self):
         """Clear the output area"""
