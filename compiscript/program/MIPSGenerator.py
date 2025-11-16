@@ -181,53 +181,51 @@ class MIPSGenerator:
         self.current_function = self.function_stack.pop() if self.function_stack else None
         return i
     
+    
+    
     def _emit_function_prologue(self, func_name: str):
         """Emit function prologue"""
-        self._emit(f"{func_name}:")
+        self._emit(f"\n{func_name}:")
+        self._emit("# Prologo")
         
-        # Calculate frame size: saved registers + $ra + $fp + local variables
-        # We'll update this as we process the function, but start with minimum
-        num_saved = len(self.used_saved_registers)
-        frame_size = num_saved * 4 + 8  # saved regs + $ra + $fp
-        # Add space for local variables (will be updated)
-        frame_size += self.stack_offset
+        # ✅ Calcular frame size mínimo (se ajustará según sea necesario)
+        # Espacio para $ra + $fp + variables locales
+        base_frame_size = 8  # Mínimo: $ra(4) + $fp(4)
         
-        # Ensure frame size is multiple of 8 for alignment (MIPS convention)
-        if frame_size % 8 != 0:
-            frame_size += 4
+        # Reservar espacio en stack
+        self._emit("addi $sp, $sp, -{}".format(base_frame_size))
         
-        # Save frame pointer and return address
-        self._emit("addi $sp, $sp, -{}".format(frame_size))
-        self._emit("sw $fp, {}($sp)".format(frame_size - 4))
-        self._emit("sw $ra, {}($sp)".format(frame_size - 8))
+        # Guardar $ra y $fp
+        self._emit("sw $ra, 4($sp)")
+        self._emit("sw $fp, 0($sp)")
         
-        # Save used saved registers
-        saved_offset = frame_size - 12
-        for reg in sorted(self.used_saved_registers):
-            self._emit("sw {}, {}($sp)".format(reg, saved_offset))
-            saved_offset -= 4
-        
-        # Set new frame pointer
+        # Establecer nuevo frame pointer
         self._emit("move $fp, $sp")
         
-        self.function_info[func_name]['frame_size'] = frame_size
-        self.frame_size = frame_size
-    
+        # ✅ IMPORTANTE: Los parámetros pasados por el caller están en:
+        # - $a0-$a3 para los primeros 4
+        # - 8($fp), 12($fp), ... para parámetros adicionales
+        
+        # Guardar frame size para el epílogo
+        self.function_info[func_name]['frame_size'] = base_frame_size
+        self.frame_size = base_frame_size
+        self._emit("")
+
     def _emit_function_epilogue(self, func_name: str):
         """Emit function epilogue"""
-        frame_size = self.function_info.get(func_name, {}).get('frame_size', 0)
+        self._emit("\n# Epilogo")
+        frame_size = self.function_info.get(func_name, {}).get('frame_size', 8)
         
-        # Restore saved registers
-        saved_offset = frame_size - 12
-        for reg in sorted(self.used_saved_registers):
-            self._emit("lw {}, {}($sp)".format(reg, saved_offset))
-            saved_offset -= 4
+        # Restaurar $ra y $fp
+        self._emit("lw $ra, 4($sp)")
+        self._emit("lw $fp, 0($sp)")
         
-        # Restore return address and frame pointer
-        self._emit("lw $ra, {}($sp)".format(frame_size - 8))
-        self._emit("lw $fp, {}($sp)".format(frame_size - 4))
+        # Restaurar stack pointer
         self._emit("addi $sp, $sp, {}".format(frame_size))
+        
+        # Retornar
         self._emit("jr $ra")
+        self._emit("")
     
     def _generate_instruction(self, instr: TACInstruction):
         """Generate MIPS code for a single TAC instruction"""
@@ -720,64 +718,69 @@ class MIPSGenerator:
             else:
                 self._emit("lw {}, {}".format(arg_reg, param_value))
         else:
-            # Pass on stack
-            stack_offset = (param_index - 4) * 4
-            if param_value.startswith("$"):
-                self._emit("sw {}, {}($sp)".format(param_value, stack_offset))
-            elif param_value.replace('-', '').isdigit():
-                temp_reg = self._allocate_register(force_temp=True)
-                self._emit("li {}, {}".format(temp_reg, param_value))
-                self._emit("sw {}, {}($sp)".format(temp_reg, stack_offset))
-            else:
-                temp_reg = self._allocate_register(force_temp=True)
-                self._emit("lw {}, {}".format(temp_reg, param_value))
-                self._emit("sw {}, {}($sp)".format(temp_reg, stack_offset))
+            # ✅ CORREGIDO: Los parámetros extras se pasarán en el stack
+            # Pero NO los guardamos aquí, se hace en _emit_call
+            pass
         
         self.param_stack[-1].append(param_value)
     
     def _emit_call(self, func_name: str, num_params: int):
         """Emit function call"""
-        # Save caller-saved registers that might be in use
-        # For simplicity, save all temp registers
-        saved_regs = []
-        for reg in self.TEMP_REGISTERS:
-            if reg in self.register_used:
-                saved_regs.append(reg)
+        # stack management
         
-        # Calculate stack space needed
-        stack_params = max(0, num_params - 4)
+        # 1. save temporal registers in use
+        saved_regs = [reg for reg in self.TEMP_REGISTERS if reg in self.register_used]
+        
+        # 2. Calculate necessary stack space
+        stack_params = max(0, num_params - 4)  # Parameters that don't fit in $a0-$a3
         save_space = len(saved_regs) * 4
-        total_space = stack_params * 4 + save_space + 4  # +4 for $ra
         
+        # Space for: extra parameters + saved registers
+        total_space = stack_params * 4 + save_space
+        
+        # 3. Adjust stack if necessary
         if total_space > 0:
             self._emit("addi $sp, $sp, -{}".format(total_space))
         
-        # Save $ra
-        self._emit("sw $ra, {}($sp)".format(total_space - 4))
-        
-        # Save temp registers
-        offset = total_space - 8
+        # 4. Save temporal registers
+        offset = total_space - 4
         for reg in saved_regs:
             self._emit("sw {}, {}($sp)".format(reg, offset))
             offset -= 4
         
-        # Call function
+        # 5. Pass extra parameters on stack (if more than 4)
+        if num_params > 4 and self.param_stack:
+            params = self.param_stack[-1]
+            for i in range(4, num_params):
+                if i < len(params):
+                    param_value = params[i]
+                    stack_offset = (i - 4) * 4
+                    
+                    if param_value.startswith("$"):
+                        self._emit("sw {}, {}($sp)".format(param_value, stack_offset))
+                    elif param_value.replace('-', '').isdigit():
+                        temp_reg = "$t9"  # Usar $t9 temporalmente
+                        self._emit("li {}, {}".format(temp_reg, param_value))
+                        self._emit("sw {}, {}($sp)".format(temp_reg, stack_offset))
+                    else:
+                        temp_reg = "$t9"
+                        self._emit("lw {}, {}".format(temp_reg, param_value))
+                        self._emit("sw {}, {}($sp)".format(temp_reg, stack_offset))
+        
+        # 6. Call the function
         self._emit("jal {}".format(func_name))
         
-        # Restore temp registers
-        offset = total_space - 8
+        # 7. Restore temporal registers
+        offset = total_space - 4
         for reg in saved_regs:
             self._emit("lw {}, {}($sp)".format(reg, offset))
             offset -= 4
         
-        # Restore $ra
-        self._emit("lw $ra, {}($sp)".format(total_space - 4))
-        
-        # Restore stack
+        # 8. Restore stack
         if total_space > 0:
             self._emit("addi $sp, $sp, {}".format(total_space))
         
-        # Clear parameter stack
+        # 9. Clear parameter stack
         if self.param_stack:
             self.param_stack.pop()
     
@@ -785,12 +788,13 @@ class MIPSGenerator:
         """Emit return statement"""
         if value:
             value_reg = self._get_operand_location(value)
-            if not value_reg.startswith("$"):
-                # Load to $v0
-                self._emit("lw $v0, {}".format(value_reg))
-            else:
+            if value_reg.startswith("$"):
                 self._emit("move $v0, {}".format(value_reg))
-        # Epilogue will handle jr $ra
+            elif value_reg.replace('-', '').isdigit():
+                self._emit("li $v0, {}".format(value_reg))
+            else:
+                self._emit("lw $v0, {}".format(value_reg))
+            # Epilogue will handle jr $ra
     
     def _emit_print(self, value: str):
         """Emit print statement"""
