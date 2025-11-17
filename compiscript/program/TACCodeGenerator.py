@@ -47,6 +47,8 @@ class TACCodeGenerator(CompiscriptListener):
         # Stack para gestionar contextos
         self.current_function = None
         self.function_stack: List[str] = []
+        self.current_class = None  # Clase actual para diferenciar constructores/métodos
+        self.class_stack: List[str] = []  # Stack de clases para clases anidadas
         self.scope_depth = 0
         self.loop_labels: List[tuple] = []  # (continue_label, break_label)
         
@@ -239,6 +241,33 @@ class TACCodeGenerator(CompiscriptListener):
         """Salida del programa"""
         self.emit("// === END OF PROGRAM ===")
     
+    # ==================== CLASS DECLARATIONS ====================
+    
+    def enterClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
+        """Entrada de declaración de clase"""
+        if not ctx.Identifier():
+            return
+        
+        # Obtener nombre de la clase (primer Identifier)
+        identifiers = ctx.Identifier()
+        if isinstance(identifiers, list):
+            class_name = identifiers[0].getText()
+        else:
+            class_name = ctx.Identifier(0).getText() if hasattr(ctx, 'Identifier') else identifiers.getText()
+        
+        self.current_class = class_name
+        self.class_stack.append(class_name)
+        self.emit_comment(f"CLASS {class_name}")
+    
+    def exitClassDeclaration(self, ctx: CompiscriptParser.ClassDeclarationContext):
+        """Salida de declaración de clase"""
+        if self.class_stack:
+            class_name = self.class_stack.pop()
+            self.emit_comment(f"END CLASS {class_name}")
+        
+        # Restaurar clase anterior si había clases anidadas
+        self.current_class = self.class_stack[-1] if self.class_stack else None
+    
     # ==================== FUNCTION DECLARATIONS ====================
     
     def enterFunctionDeclaration(self, ctx: CompiscriptParser.FunctionDeclarationContext):
@@ -247,12 +276,19 @@ class TACCodeGenerator(CompiscriptListener):
             return
         
         func_name = ctx.Identifier().getText()
-        self.current_function = func_name
-        self.function_stack.append(func_name)
+        
+        # Si la función está dentro de una clase, generar nombre único
+        # Formato: constructor_ClassName o methodName_ClassName
+        qualified_func_name = func_name
+        if self.current_class:
+            qualified_func_name = f"{func_name}_{self.current_class}"
+        
+        self.current_function = qualified_func_name
+        self.function_stack.append(qualified_func_name)
         self.scope_depth += 1
         
         # Entrar en nuevo ámbito de función
-        self.scope_stack.append(f"function_{func_name}")
+        self.scope_stack.append(f"function_{qualified_func_name}")
         current_scope = self.scope_stack[-1]
         self.scope_variables[current_scope] = {}
         
@@ -297,7 +333,7 @@ class TACCodeGenerator(CompiscriptListener):
 
         # Record start index of function body in instructions to detect missing RETURN
         self.current_function_start = len(self.instructions)
-        self.emit(f"FUNCTION {func_name}:")
+        self.emit(f"FUNCTION {qualified_func_name}:")
         # Indentar el contenido de la función
         self.indent_in()
     
@@ -317,7 +353,8 @@ class TACCodeGenerator(CompiscriptListener):
                     if instr.strip().startswith('RETURN'):
                         has_return = True
                         break
-                if func_name == 'constructor' and not has_return:
+                # Detectar si es un constructor (formato: constructor_ClassName)
+                if func_name.startswith('constructor') and not has_return:
                     self.emit_return('0')
             except Exception:
                 pass
@@ -1005,8 +1042,12 @@ class TACCodeGenerator(CompiscriptListener):
         
         return "0"
     
-    def _handle_function_call(self, func_name: str, arguments_ctx) -> str:
+    def _handle_function_call(self, func_name: str, arguments_ctx, object_ctx=None) -> str:
         """Maneja llamadas a función"""
+        # Si es una llamada a método (object.method), agregar sufijo de clase
+        # Por ahora, el generador semántico debe resolver esto
+        # En el futuro, podríamos inspeccionar object_ctx para obtener el tipo
+        
         # Evaluar argumentos y emitir PARAM si está habilitado
         if arguments_ctx:
             # Intentar obtener expresiones de diferentes formas

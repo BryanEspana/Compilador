@@ -44,6 +44,8 @@ class CompiscriptIDE:
         self.file_modified = False
         # Último analizador semántico para mostrar tabla símbolos
         self.last_analyzer = None
+        # Último código MIPS generado
+        self.last_mips_code = None
 
         # Construir interfaz
         self.setup_ui()
@@ -73,9 +75,7 @@ class CompiscriptIDE:
         compile_menu.add_separator()
         compile_menu.add_command(label="View Symbol Table", command=self.show_symbol_table)
         compile_menu.add_command(label="View Intermediate Code", command=self.show_intermediate_code)
-        compile_menu.add_separator()
-        compile_menu.add_command(label="Generate MIPS Code", command=self.generate_mips_code, accelerator="F6")
-
+        compile_menu.add_command(label="View MIPS Code", command=self.show_mips_code)
 
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -87,7 +87,6 @@ class CompiscriptIDE:
         self.root.bind('<Control-o>', lambda e: self.open_file())
         self.root.bind('<Control-s>', lambda e: self.save_file())
         self.root.bind('<F5>', lambda e: self.compile_code())
-        self.root.bind('<F6>', lambda e: self.generate_mips_code())
     
     def setup_ui(self):
         """Setup the user interface"""
@@ -108,7 +107,7 @@ class CompiscriptIDE:
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=5)
         ttk.Button(toolbar, text="Symbol Table", command=self.show_symbol_table).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(toolbar, text="Codigo Intermedio", command=self.show_intermediate_code).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(toolbar, text="Generate MIPS (F6)", command=self.generate_mips_code).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(toolbar, text="Codigo MIPS", command=self.show_mips_code).pack(side=tk.LEFT, padx=(0, 5))
 
         # Status label
         self.status_var = tk.StringVar(value="Ready")
@@ -365,6 +364,11 @@ class CompiscriptIDE:
             if success:
                 self.append_output("Compilation successful! No semantic errors found.\n", "success")
                 self.status_var.set("Compilation successful")
+                
+                # Generar código MIPS automáticamente
+                self.append_output("\n" + "="*60 + "\n", "info")
+                self.append_output("Generating MIPS code...\n", "info")
+                self._generate_and_display_mips()
             else:
                 self.append_output(f"Compilation failed with {len(errors)} error(s):\n", "error")
                 for i, error in enumerate(errors, 1):
@@ -510,6 +514,71 @@ class CompiscriptIDE:
         text_area.insert(tk.END, intermediate_code)
         text_area.config(state=tk.DISABLED)
     
+    def show_mips_code(self):
+        """Muestra el código MIPS en una nueva ventana"""
+        if not self.last_mips_code:
+            messagebox.showinfo("MIPS Code", "No MIPS code has been generated yet.\n\nPlease compile your code first (F5).")
+            return
+
+        # Crear una nueva ventana para mostrar el código MIPS
+        mips_window = tk.Toplevel(self.root)
+        mips_window.title("Código MIPS Assembly")
+        mips_window.geometry("900x700")
+        
+        # Frame para botones
+        button_frame = ttk.Frame(mips_window)
+        button_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        ttk.Label(button_frame, text="MIPS Assembly Code", font=('Arial', 10, 'bold')).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Save to File", 
+                  command=lambda: self._save_mips_from_window(self.last_mips_code)).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="Copy to Clipboard", 
+                  command=lambda: self._copy_to_clipboard(self.last_mips_code)).pack(side=tk.RIGHT, padx=(5, 0))
+        
+        # Área de texto para mostrar código
+        text_area = scrolledtext.ScrolledText(mips_window, wrap=tk.NONE, font=('Consolas', 10))
+        text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Insertar código MIPS
+        text_area.insert(tk.END, self.last_mips_code)
+        
+        # Configurar tags para resaltado básico
+        self._highlight_mips_code(text_area)
+        text_area.config(state=tk.DISABLED)
+    
+    def _generate_and_display_mips(self):
+        """Genera código MIPS y guarda para visualización posterior"""
+        try:
+            # Verificar que haya código intermedio
+            intermediate_code = self.last_analyzer.get_intermediate_code()
+            if not intermediate_code or intermediate_code.strip() == "(No intermediate code generated)":
+                self.append_output("No intermediate code available for MIPS generation.\n", "error")
+                self.last_mips_code = None
+                return
+            
+            # Generar código MIPS
+            mips_generator = MIPSGenerator()
+            mips_code = mips_generator.generate(intermediate_code)
+            
+            # Guardar el código MIPS generado
+            self.last_mips_code = mips_code
+            
+            # Mostrar solo mensaje de éxito en el output
+            self.append_output("MIPS code generated successfully!\n", "success")
+            self.append_output("Click 'Codigo MIPS' button to view the generated assembly code.\n", "info")
+            
+            # TODO: Aquí se podría ejecutar el código MIPS en un simulador y mostrar el resultado
+            # Por ahora solo mostramos un mensaje indicativo
+            self.append_output("\n--- MIPS Execution Result ---\n", "info")
+            self.append_output("(MIPS execution simulation not implemented yet)\n", "info")
+            self.append_output("Expected output: [Run in MIPS simulator to see results]\n", "info")
+            
+        except Exception as e:
+            self.append_output(f"Error generating MIPS code: {str(e)}\n", "error")
+            self.last_mips_code = None
+            import traceback
+            traceback.print_exc()
+    
     def generate_mips_code(self):
         """Genera código MIPS desde el código intermedio"""
         # Primero verificar que se haya compilado
@@ -620,6 +689,30 @@ class CompiscriptIDE:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self.status_var.set("Código copiado al portapapeles")
+    
+    def _save_mips_from_window(self, mips_code):
+        """Guarda el código MIPS desde la ventana de visualización"""
+        if self.current_file:
+            base_name = os.path.splitext(os.path.basename(self.current_file))[0]
+            default_filename = base_name
+        else:
+            default_filename = "output"
+        
+        file_path = filedialog.asksaveasfilename(
+            title="Save MIPS Assembly File",
+            defaultextension=".asm",
+            initialfile=default_filename,
+            filetypes=[("MIPS Assembly files", "*.asm"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(mips_code)
+                messagebox.showinfo("Success", f"MIPS code saved successfully:\n{file_path}")
+                self.status_var.set(f"MIPS code saved: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not save file:\n{str(e)}")
     
     def _save_mips_file(self, mips_code, parent_window):
         """Guarda el código MIPS en un archivo"""
