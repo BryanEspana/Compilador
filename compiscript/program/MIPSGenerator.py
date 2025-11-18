@@ -61,6 +61,10 @@ class MIPSGenerator:
         self.data_section: List[str] = []
         self.text_section: List[str] = []
         
+        # String literals management
+        self.string_literals: Dict[str, str] = {}  # string_content -> label
+        self.string_counter = 0
+        
         # Track which saved registers are used in current function
         self.used_saved_registers: Set[str] = set()
         
@@ -214,10 +218,23 @@ class MIPSGenerator:
         self.stack_offset = 0
         self.stack_variables.clear()
         
-        # Function prologue
+        # Function prologue (handles built-ins internally)
         self._emit_function_prologue(func_name)
         
-        # Generate function body
+        # Skip body generation for built-in functions
+        if func_name in ["printString", "toString"]:
+            # Skip to end of function
+            i = start_idx + 1
+            while i < len(instructions):
+                instr = instructions[i]
+                if instr.comment and f"END FUNCTION {func_name}" in instr.comment:
+                    self.current_function = self.function_stack.pop() if self.function_stack else None
+                    return i + 1
+                i += 1
+            self.current_function = self.function_stack.pop() if self.function_stack else None
+            return i
+        
+        # Generate function body for regular functions
         i = start_idx + 1
         while i < len(instructions):
             instr = instructions[i]
@@ -238,10 +255,50 @@ class MIPSGenerator:
         return i
     
     
+    def _emit_builtin_printString(self):
+        """Generate built-in printString function - prints string and returns it"""
+        self._emit("# Built-in function: printString(x: string) -> string")
+        self._emit("# Parameter: $a0 = address of string")
+        self._emit("# Returns: $v0 = same address")
+        self._emit("")
+        self._emit("# Print the string")
+        self._emit("li $v0, 4          # syscall 4 = print_string")
+        self._emit("# $a0 already contains string address")
+        self._emit("syscall")
+        self._emit("")
+        self._emit("# Return the same string address")
+        self._emit("move $v0, $a0")
+        self._emit("jr $ra")
+        self._emit("")
+    
+    def _emit_builtin_toString(self):
+        """Generate built-in toString function - converts integer to string (simplified)"""
+        self._emit("# Built-in function: toString(x: integer) -> string")
+        self._emit("# Parameter: $a0 = integer value")
+        self._emit("# Returns: $v0 = address of string (simplified - just returns empty)")
+        self._emit("# NOTE: Full implementation would require dynamic memory allocation")
+        self._emit("")
+        self._emit("# For now, print the integer directly")
+        self._emit("move $a0, $a0      # integer already in $a0")
+        self._emit("li $v0, 1          # syscall 1 = print_int")
+        self._emit("syscall")
+        self._emit("")
+        self._emit("# Return empty string address for now")
+        self._emit("la $v0, newline    # placeholder")
+        self._emit("jr $ra")
+        self._emit("")
     
     def _emit_function_prologue(self, func_name: str):
         """Emit function prologue"""
         self._emit(f"\n{func_name}:")
+        
+        # Check for built-in functions that need special implementation
+        if func_name == "printString":
+            self._emit_builtin_printString()
+            return
+        elif func_name == "toString":
+            self._emit_builtin_toString()
+            return
         
         # ✅ Detectar si la función es leaf (no llama a otras funciones)
         # Si es leaf, podemos omitir guardar $ra y simplificar el prólogo
@@ -851,6 +908,31 @@ class MIPSGenerator:
         mips_label = self.label_map.get(label, self._mips_label(label))
         self._emit("bne {}, $zero, {}".format(cond_reg, mips_label))
     
+    def _add_string_literal(self, string_content: str) -> str:
+        """Add string literal to data section and return its label"""
+        # Remove quotes from string
+        if string_content.startswith('"') and string_content.endswith('"'):
+            string_content = string_content[1:-1]
+        
+        # Check if string already exists
+        if string_content in self.string_literals:
+            return self.string_literals[string_content]
+        
+        # Create new label
+        label = f"str_{self.string_counter}"
+        self.string_counter += 1
+        self.string_literals[string_content] = label
+        
+        # Add to data section (will be added during finalization)
+        return label
+    
+    def _is_string_literal(self, value: str) -> bool:
+        """Check if value is a string literal"""
+        if not value:
+            return False
+        value = value.strip()
+        return (value.startswith('"') and value.endswith('"')) or value == '""'
+    
     def _emit_assign(self, result: str, source: str):
         """Emit assignment: result = source"""
         if not result:
@@ -862,6 +944,13 @@ class MIPSGenerator:
             # Avoid unnecessary move if result is already mapped to $v0
             if result_reg != "$v0":
                 self._emit("move {}, $v0".format(result_reg))
+            return
+        
+        # Check if source is a string literal
+        if self._is_string_literal(source):
+            str_label = self._add_string_literal(source)
+            dst_reg = self.get_register(result, force_temp=True)
+            self._emit(f"la {dst_reg}, {str_label}  # Load address of string")
             return
         
         src_loc = self._get_operand_location(source)
@@ -885,6 +974,29 @@ class MIPSGenerator:
         if not result:
             return
         
+        # Special case: String concatenation (ADD operation with string operands)
+        if op == "add" and (self._is_string_literal(arg1) or self._is_string_literal(arg2)):
+            self._emit("# String concatenation - NOT FULLY IMPLEMENTED")
+            self._emit("# WARNING: String concatenation requires dynamic memory allocation")
+            # For now, just use the first operand
+            if self._is_string_literal(arg1):
+                str_label = self._add_string_literal(arg1)
+                res_reg = self.get_register(result, force_temp=True)
+                self._emit(f"la {res_reg}, {str_label}  # Load first string (concat not impl)")
+            elif self._is_string_literal(arg2):
+                str_label = self._add_string_literal(arg2)
+                res_reg = self.get_register(result, force_temp=True)
+                self._emit(f"la {res_reg}, {str_label}  # Load second string (concat not impl)")
+            else:
+                # Both are variables, use first one
+                op1 = self._get_operand_location(arg1)
+                res_reg = self.get_register(result, force_temp=True)
+                if op1.startswith("$"):
+                    self._emit(f"move {res_reg}, {op1}  # Use first string (concat not impl)")
+                else:
+                    self._emit(f"lw {res_reg}, {op1}  # Load first string (concat not impl)")
+            return
+        
         # Obtener ubicaciones de operandos (ya maneja parámetros correctamente)
         op1 = self._get_operand_location(arg1)
         op2 = self._get_operand_location(arg2)
@@ -897,7 +1009,11 @@ class MIPSGenerator:
                 # Asegurar que op1 es un registro
                 if not op1.startswith("$"):
                     op1_reg = self._allocate_register(force_temp=True)
-                    self._emit("lw {}, {}".format(op1_reg, op1))
+                    # Verificar si op1 es un número o una dirección de memoria
+                    if op1.replace('-', '').isdigit():
+                        self._emit("li {}, {}".format(op1_reg, op1))
+                    else:
+                        self._emit("lw {}, {}".format(op1_reg, op1))
                     op1 = op1_reg
                 
                 if op == "add":
@@ -946,11 +1062,17 @@ class MIPSGenerator:
         # Load operands if needed
         if not op1.startswith("$"):
             op1_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op1_reg, op1))
+            if op1.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op1_reg, op1))
+            else:
+                self._emit("lw {}, {}".format(op1_reg, op1))
             op1 = op1_reg
         if not op2.startswith("$"):
             op2_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op2_reg, op2))
+            if op2.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op2_reg, op2))
+            else:
+                self._emit("lw {}, {}".format(op2_reg, op2))
             op2 = op2_reg
         
         self._emit("mult {}, {}".format(op1, op2))
@@ -965,11 +1087,17 @@ class MIPSGenerator:
         # Load operands if needed
         if not op1.startswith("$"):
             op1_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op1_reg, op1))
+            if op1.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op1_reg, op1))
+            else:
+                self._emit("lw {}, {}".format(op1_reg, op1))
             op1 = op1_reg
         if not op2.startswith("$"):
             op2_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op2_reg, op2))
+            if op2.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op2_reg, op2))
+            else:
+                self._emit("lw {}, {}".format(op2_reg, op2))
             op2 = op2_reg
         
         self._emit("div {}, {}".format(op1, op2))
@@ -984,11 +1112,17 @@ class MIPSGenerator:
         # Load operands if needed
         if not op1.startswith("$"):
             op1_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op1_reg, op1))
+            if op1.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op1_reg, op1))
+            else:
+                self._emit("lw {}, {}".format(op1_reg, op1))
             op1 = op1_reg
         if not op2.startswith("$"):
             op2_reg = self._allocate_register(force_temp=True)
-            self._emit("lw {}, {}".format(op2_reg, op2))
+            if op2.replace('-', '').isdigit():
+                self._emit("li {}, {}".format(op2_reg, op2))
+            else:
+                self._emit("lw {}, {}".format(op2_reg, op2))
             op2 = op2_reg
         
         self._emit("div {}, {}".format(op1, op2))
@@ -1584,6 +1718,16 @@ class MIPSGenerator:
         output.append(".data")
         output.append("    .align 2")
         output.append("newline: .asciiz \"\\n\"")
+        
+        # Add string literals
+        for string_content, label in self.string_literals.items():
+            # Escape special characters (but don't double-escape already escaped sequences)
+            # Only escape quotes and actual newline characters
+            escaped = string_content.replace('"', '\\"')
+            if not '\\n' in escaped:
+                escaped = escaped.replace('\n', '\\n')
+            output.append(f"{label}: .asciiz \"{escaped}\"")
+        
         output.append("")
         
         # Add global variables if any

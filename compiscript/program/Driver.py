@@ -33,7 +33,7 @@ def main(argv):
         print(f"Compiling: {argv[1]}")
         print("=" * 50)
         
-        input_stream = FileStream(argv[1])
+        input_stream = FileStream(argv[1], encoding='utf-8')
         lexer = CompiscriptLexer(input_stream)
         stream = CommonTokenStream(lexer)
         parser = CompiscriptParser(stream)
@@ -65,9 +65,28 @@ def main(argv):
             print("\n[INFO] Symbol Table:")
             semantic_analyzer.print_symbol_table()
             
-            # Generate TAC code
-            tac_code = semantic_analyzer.tac_generator.get_tac_code()
-            print("\n[INFO] Three-Address Code generated")
+            # Generate TAC code - Second pass with TAC generator
+            print("\n[INFO] Generating Three-Address Code...")
+            from TACCodeGenerator import TACCodeGenerator
+            tac_generator = TACCodeGenerator(emit_params=True)
+            walker.walk(tac_generator, tree)
+            tac_code = tac_generator.get_tac_code()
+            
+            if tac_code.strip():
+                print("[OK] Three-Address Code generated")
+                
+                # Optionally print TAC code preview
+                print("\n[INFO] TAC Code Preview (first 30 lines):")
+                print("-" * 50)
+                tac_lines = tac_code.split('\n')
+                for i, line in enumerate(tac_lines[:30], 1):
+                    if line.strip():
+                        print(f"{i:3d}: {line}")
+                if len(tac_lines) > 30:
+                    print(f"... ({len(tac_lines) - 30} more lines)")
+                print("-" * 50)
+            else:
+                print("[WARNING] No TAC code generated - this may indicate missing implementations")
             
             # Generate MIPS if requested
             if generate_mips:
@@ -81,13 +100,13 @@ def main(argv):
                 mips_generator.generate_to_file(mips_filename, tac_code)
                 
                 print(f"[OK] MIPS assembly code written to: {mips_filename}")
-                print(f"\n[INFO] MIPS Code Preview (first 20 lines):")
+                print(f"\n[INFO] MIPS Code Preview (first 30 lines):")
                 print("-" * 50)
                 lines = mips_code.split('\n')
-                for i, line in enumerate(lines[:20], 1):
+                for i, line in enumerate(lines[:30], 1):
                     print(f"{i:3d}: {line}")
-                if len(lines) > 20:
-                    print(f"... ({len(lines) - 20} more lines)")
+                if len(lines) > 30:
+                    print(f"... ({len(lines) - 30} more lines)")
         
         # Optional: Print parse tree (uncomment for debugging)
         # print("\n[DEBUG] Parse Tree:")

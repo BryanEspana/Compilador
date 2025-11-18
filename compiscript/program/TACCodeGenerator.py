@@ -236,9 +236,20 @@ class TACCodeGenerator(CompiscriptListener):
     def enterProgram(self, ctx: CompiscriptParser.ProgramContext):
         """Entrada del programa"""
         self.emit("// === COMPISCRIPT PROGRAM ===")
+        # Marcar que vamos a necesitar generar main después de las funciones
+        self.needs_main_wrapper = False
+        self.main_code_start_index = None
     
     def exitProgram(self, ctx: CompiscriptParser.ProgramContext):
         """Salida del programa"""
+        # Si hay código global (fuera de funciones), envolverlo en main
+        if self.needs_main_wrapper and self.main_code_start_index is not None:
+            # Insertar FUNCTION main: antes del código global
+            self.instructions.insert(self.main_code_start_index, "FUNCTION main:")
+            self.instructions.insert(self.main_code_start_index + 1, "\t// Global initialization code")
+            # Agregar END FUNCTION main al final
+            self.emit("END FUNCTION main")
+        
         self.emit("// === END OF PROGRAM ===")
     
     # ==================== CLASS DECLARATIONS ====================
@@ -391,6 +402,12 @@ class TACCodeGenerator(CompiscriptListener):
         
         # Solo generar código TAC si hay inicializador explícito
         if ctx.initializer() and ctx.initializer().expression():
+            # Marcar inicio de main si estamos en ámbito global
+            if self.scope_stack[-1] == "global" and not self.current_function:
+                if not self.needs_main_wrapper:
+                    self.needs_main_wrapper = True
+                    self.main_code_start_index = len(self.instructions)
+            
             result = self.visit_expression(ctx.initializer().expression())
             
             # SIEMPRE emitir asignación a memoria para que la variable esté disponible
@@ -1089,6 +1106,12 @@ class TACCodeGenerator(CompiscriptListener):
     def enterExpressionStatement(self, ctx: CompiscriptParser.ExpressionStatementContext):
         """Statement de expresión"""
         if ctx.expression():
+            # Marcar inicio de main si estamos en ámbito global
+            if self.scope_stack[-1] == "global" and not self.current_function:
+                if not self.needs_main_wrapper:
+                    self.needs_main_wrapper = True
+                    self.main_code_start_index = len(self.instructions)
+            
             # Verificar si es una llamada a función directa
             expr_text = ctx.expression().getText()
             if "(" in expr_text and ")" in expr_text:
@@ -1306,6 +1329,12 @@ class TACCodeGenerator(CompiscriptListener):
         """
         if not ctx.expression():
             return
+        
+        # Marcar inicio de main si estamos en ámbito global
+        if self.scope_stack[-1] == "global" and not self.current_function:
+            if not self.needs_main_wrapper:
+                self.needs_main_wrapper = True
+                self.main_code_start_index = len(self.instructions)
         
         # Usar ID único para este while
         while_id = self.while_counter
